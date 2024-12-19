@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, path::PathBuf, sync::LazyLock};
+use std::{collections::HashMap, path::PathBuf, sync::LazyLock};
 use thiserror::Error;
 use toml_edit::{DocumentMut, Item};
 use tracing::{info, trace};
@@ -61,13 +61,14 @@ impl CargoManifest {
     #[must_use = "This method returns the shared instance of the CargoManifest."]
     pub fn shared() -> &'static LazyLock<Self> {
         static LAZY_MANIFEST: LazyLock<CargoManifest> = LazyLock::new(|| {
-            let cargo_manifest_dir = env::var_os("CARGO_MANIFEST_DIR");
+            let cargo_manifest_dir = proc_macro::tracked_env::var("CARGO_MANIFEST_DIR");
             info!("CARGO_MANIFEST_DIR: {:?}", cargo_manifest_dir);
 
             let cargo_manifest_path = cargo_manifest_dir
                 .map(PathBuf::from)
                 .map(|mut path| {
                     path.push("Cargo.toml");
+                    proc_macro::tracked_path::path(path.to_string_lossy());
                     assert!(
                         path.exists(),
                         "Cargo.toml does not exist at: {}",

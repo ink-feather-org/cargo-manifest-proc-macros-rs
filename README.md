@@ -119,7 +119,8 @@ conditions.
 
 ## How it works
 
-
+This crate works by parsing the `$CARGO_MANIFEST_DIR/Cargo.toml` file and extracting the dependencies from it.
+It then uses the `package` field in the `Cargo.toml` to resolve the path to the crate.
 
 ### Links
 

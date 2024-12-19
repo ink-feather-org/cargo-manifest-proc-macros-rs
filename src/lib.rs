@@ -1,5 +1,9 @@
 #![doc = include_str!("../README.md")]
 #![feature(map_try_insert)]
+#![feature(proc_macro_tracked_env)]
+#![feature(track_path)]
+
+extern crate proc_macro;
 
 mod cargo_manifest;
 
