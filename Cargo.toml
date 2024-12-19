@@ -88,10 +88,16 @@ categories = ["development-tools::procedural-macro-helpers"]
 keywords = ["proc-macro", "nightly"]
 
 [dependencies]
-tracing = "0.1"
-syn = "2.0"
-thiserror = "2.0"
-toml_edit = "0.22"
+tracing = { version = "0.1", default-features = false }
+syn = { version = "2.0", default-features = false, features = [
+  "derive",
+  "parsing",
+] }
+thiserror = { version = "2.0", default-features = false }
+toml_edit = { version = "0.22", default-features = false, features = ["parse"] }
+
+[dev-dependencies]
+syn = { version = "2.0", default-features = false, features = ["proc-macro"] }
 
 [lints]
 workspace = true
