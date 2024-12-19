@@ -9,7 +9,7 @@
 ## Requirements
 
 `cargo-manifest-proc-macros` is a library for creating proc-macros.
-It provides a reliably way to compute the [`syn::Path] to other crates.
+It provides a reliably way to compute the [`syn::Path`] to other crates.
 
 This crate requires a nightly compiler.
 
