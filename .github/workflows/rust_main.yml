@@ -1,0 +1,19 @@
+# Based on https://github.com/taiki-e/parse-changelog/blob/777a82184bcbe0ed975e63a491f5fbf80b29cb1b/.github/workflows/release.yml
+
+name: Rust Main CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["main"]
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  call_rust_validation:
+    uses: ./.github/workflows/rust_validation.yml
+    secrets: inherit

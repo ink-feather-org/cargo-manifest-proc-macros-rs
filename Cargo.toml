@@ -1,0 +1,101 @@
+[workspace]
+resolver = "2"
+
+[workspace.lints.clippy]
+needless_lifetimes = "allow"
+option_if_let_else = "allow"
+# see: https://github.com/bevyengine/bevy/pull/15375#issuecomment-2366966219
+too_long_first_doc_paragraph = "allow"
+missing_panics_doc = "allow"
+doc-markdown = "allow"
+
+nursery = { priority = -1, level = "warn" }
+pedantic = { priority = -1, level = "warn" }
+doc_markdown = "warn"
+manual_let_else = "warn"
+match_same_arms = "warn"
+redundant_closure_for_method_calls = "warn"
+redundant_else = "warn"
+semicolon_if_nothing_returned = "warn"
+type_complexity = "allow"
+undocumented_unsafe_blocks = "warn"
+unwrap_or_default = "warn"
+
+ptr_as_ptr = "warn"
+ptr_cast_constness = "warn"
+ref_as_ptr = "warn"
+
+std_instead_of_core = "warn"
+std_instead_of_alloc = "warn"
+alloc_instead_of_core = "warn"
+
+[workspace.lints.rust]
+nonstandard-style = "warn"
+future-incompatible = "warn"
+missing_docs = "warn"
+unused = { priority = -1, level = "warn" }
+rust_2018_idioms = { priority = -1, level = "warn" }
+rust-2024-compatibility = "warn"
+array-into-iter = "warn"
+bare-trait-objects = "warn"
+ellipsis-inclusive-range-patterns = "warn"
+non-fmt-panics = "warn"
+explicit-outlives-requirements = "warn"
+unused-extern-crates = "warn"
+unexpected_cfgs = { level = "warn" }
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "warn"
+unused_qualifications = "warn"
+
+# Enable a small amount of optimization in the dev profile.
+[profile.dev]
+opt-level = 1
+
+# Enable a large amount of optimization in the dev profile for dependencies.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Enable more optimization in the release profile at the cost of compile time.
+[profile.release]
+# Compile the entire crate as one unit.
+# Slows compile times, marginal improvements.
+# codegen-units = 1
+# Do a second optimization pass over the entire program, including dependencies.
+# Slows compile times, marginal improvements.
+lto = "thin"
+
+# Optimize for size in the wasm-release profile to reduce load times and bandwidth usage on web.
+[profile.wasm-release]
+# Default to release profile values.
+inherits = "release"
+# Optimize with size in mind (also try "z", sometimes it is better).
+# Slightly slows compile times, great improvements to file size and runtime performance.
+opt-level = "s"
+# Strip all debugging information from the binary to slightly reduce file size.
+strip = "debuginfo"
+
+# package toml
+
+[package]
+name = "cargo-manifest-proc-macros"
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Find the syn::Path to your own crate from proc-macros reliably."
+homepage = "https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs"
+repository = "https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs"
+categories = ["development-tools::procedural-macro-helpers"]
+keywords = ["proc-macro", "nightly"]
+
+[dependencies]
+tracing = "0.1"
+syn = "2.0"
+thiserror = "2.0"
+toml_edit = "0.22"
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = ["-Zunstable-options", "--generate-link-to-definition"]
+all-features = true

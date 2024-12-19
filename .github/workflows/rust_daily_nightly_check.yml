@@ -1,0 +1,12 @@
+name: Rust Daily Nightly
+
+on:
+  schedule:
+    - cron: 42 3 * * *
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  call_rust_validation:
+    uses: ./.github/workflows/rust_validation.yml
+    secrets: inherit

@@ -1,0 +1,17 @@
+[files]
+extend-exclude = [
+  "*.pbxproj", # metadata file for Xcode (OS X)
+  "*.patch",   # Automatically generated files that should not be manually modified.
+  "*.bin",     # Binary files
+  ".git/",     # Version control files
+]
+ignore-hidden = false
+
+# Match Inside a Word - Case Insensitive
+[default.extend-words]
+LOD = "LOD" # Level of detail
+
+[default]
+locale = "en-gb"
+# Ignored typos regexes
+extend-ignore-identifiers-re = []

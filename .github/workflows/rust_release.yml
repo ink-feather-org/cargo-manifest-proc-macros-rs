@@ -1,0 +1,37 @@
+# Based on https://github.com/taiki-e/parse-changelog/blob/777a82184bcbe0ed975e63a491f5fbf80b29cb1b/.github/workflows/release.yml
+
+name: Rust Github Release
+
+permissions:
+  # TODO: once `releases: write` is supported, use it instead.
+  contents: write
+
+on:
+  push:
+    tags:
+      - v[0-9]+.*
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  call_rust_validation:
+    uses: ./.github/workflows/rust_validation.yml
+    secrets: inherit
+  create-release:
+    needs: call_rust_validation
+    if: github.repository_owner == 'ink-feather-org'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      # https://github.com/taiki-e/create-gh-release-action
+      - uses: taiki-e/create-gh-release-action@v1
+        with:
+          title: $version
+          changelog: CHANGELOG.md
+          # Only accept releases from the main branch
+          branch: main
+          # (Required) GitHub token for creating GitHub Releases.
+          token: ${{ secrets.GITHUB_TOKEN }}
