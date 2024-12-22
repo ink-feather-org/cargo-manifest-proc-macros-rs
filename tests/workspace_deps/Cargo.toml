@@ -1,0 +1,16 @@
+[package]
+name = "test-workspace-root-crate"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = ["my-cool-dep", "test-crate"]
+resolver = "2"
+
+
+[workspace.dependencies]
+my-cool-dep = { package = "my-cool-dep-real-name", path = "my-cool-dep" }
+cargo-manifest-proc-macros = { path = "../.." }
+
+[dependencies]
+my-cool-dep = { workspace = true }

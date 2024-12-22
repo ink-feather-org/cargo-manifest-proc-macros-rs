@@ -1,0 +1,11 @@
+[package]
+name = "my-cool-dep-real-name"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+cargo-manifest-proc-macros = { workspace = true }
+tracing-proc-macros-ink = "0.1"

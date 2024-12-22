@@ -125,3 +125,5 @@ It then uses the `package` field in the `Cargo.toml` to resolve the path to the 
 ### Links
 
 [`syn`](https://crates.io/crates/syn)
+[`proc-macro-crate`](https://crates.io/crates/proc-macro-crate)
+[`find-crate`](https://crates.io/crates/find-crate)
