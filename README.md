@@ -15,7 +15,7 @@ This crate requires a nightly compiler.
 
 ## What can this crate do?
 
-Proc-macro crates usually tightly coupled to other crates and need to know the module path to them.
+Proc-macro crates are usually tightly coupled to other crates and need to know the module path to them.
 
 Given the following common crate structure:
 
@@ -125,5 +125,7 @@ It then uses the `package` field in the `Cargo.toml` to resolve the path to the 
 ### Links
 
 [`syn`](https://crates.io/crates/syn)
+
 [`proc-macro-crate`](https://crates.io/crates/proc-macro-crate)
+
 [`find-crate`](https://crates.io/crates/find-crate)
