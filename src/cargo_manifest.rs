@@ -157,7 +157,7 @@ impl CargoManifest {
       // parse user crate name
       let user_crate_name = CargoManifest::extract_user_crate_name(crate_manifest.as_table());
 
-      let mut workspace_dependencies = Some(WorkspaceDependencyResolver::new(&cargo_manifest_path));
+      let mut workspace_dependencies = WorkspaceDependencyResolver::new(&cargo_manifest_path);
 
       let resolved_dependencies = CargoManifest::extract_dependency_map_for_cargo_manifest(
         crate_manifest.as_table(),
@@ -211,20 +211,8 @@ impl CargoManifest {
   #[must_use]
   fn extract_dependency_map_for_cargo_manifest(
     cargo_manifest: &Table,
-    workspace_dependency_resolver: &mut Option<WorkspaceDependencyResolver<'_>>,
+    workspace_dependency_resolver: &mut WorkspaceDependencyResolver<'_>,
   ) -> BTreeMap<String, DependencyState> {
-    let cargo_manifest = if workspace_dependency_resolver.is_none() {
-      // If we are not resolving workspace dependencies, we should only consider the `[workspace.dependencies]` section.
-      cargo_manifest
-        .get("workspace")
-        .expect("The workspace section is missing")
-        .as_table()
-        .expect("The workspace section should be a table")
-    } else {
-      // We are not resolving workspace dependencies, so we use the top-level `[dependencies]` section.
-      cargo_manifest
-    };
-
     let dependencies_section_iter = Self::all_dependencies_tables(cargo_manifest);
 
     let dependencies_iter =
@@ -246,8 +234,6 @@ impl CargoManifest {
 
       let original_crate_name = if is_workspace_dependency {
         workspace_dependency_resolver
-          .as_mut()
-          .expect("Encountered a workspace dependency in the [workspace.dependencies] section.")
           .resolve_original_crate_name_for_workspace_dependency(dependency_key)
       } else {
         original_crate_name
@@ -520,7 +506,7 @@ mod tests {
           )
         });
     let test_path = PathBuf::from("Invalid Path During Testing");
-    let workspace_resolver = WorkspaceDependencyResolver {
+    let mut workspace_resolver = WorkspaceDependencyResolver {
       crate_manifest_path: &test_path,
       resolved_workspace_dependencies: workspace_dependency_map,
     };
@@ -528,7 +514,7 @@ mod tests {
     let user_crate_name = CargoManifest::extract_user_crate_name(&crate_manifest_toml);
     let resolved_dependencies = CargoManifest::extract_dependency_map_for_cargo_manifest(
       crate_manifest_toml.as_table(),
-      &mut Some(workspace_resolver),
+      &mut workspace_resolver,
     );
 
     CargoManifest {
