@@ -5,7 +5,7 @@ use syn::token::PathSep;
 ///
 /// Note: This does not resolve the crate name to a path.
 #[must_use = "This function returns the path to the crate as a syn::Path"]
-pub fn crate_name_to_path(crate_name: &str) -> syn::Path {
+pub fn crate_name_to_syn_path(crate_name: &str) -> syn::Path {
   let crate_name = crate_name.replace('-', "_");
   let mut path =
     syn::parse_str::<syn::Path>(crate_name.as_str()).expect("Failed to parse crate name as path");

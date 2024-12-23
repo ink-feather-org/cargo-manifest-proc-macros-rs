@@ -1,3 +1,4 @@
+#![expect(missing_docs, reason = "this is a test file")]
 use std::{path::PathBuf, process::Command};
 
 #[test]

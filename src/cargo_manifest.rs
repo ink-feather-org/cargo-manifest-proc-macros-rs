@@ -1,8 +1,8 @@
 // Tests and workspace dependency support from: https://github.com/bkchr/proc-macro-crate/blob/a5939f3fbf94279b45902119d97f881fefca6a0d/src/lib.rs
 // Based on: https://github.com/bevyengine/bevy/blob/main/crates/bevy_macro_utils/src/bevy_manifest.rs
 
+use alloc::collections::BTreeMap;
 use std::{
-  collections::BTreeMap,
   path::{Path, PathBuf},
   process::Command,
   sync::LazyLock,
@@ -11,21 +11,21 @@ use thiserror::Error;
 use toml_edit::{DocumentMut, Item, Table};
 use tracing::{info, trace};
 
-use crate::syn_utils::{crate_name_to_path, pretty_format_syn_path};
+use crate::syn_utils::{crate_name_to_syn_path, pretty_format_syn_path};
 
 /// A piece of a [`syn::Path`].
 pub type PathPiece = syn::punctuated::Punctuated<syn::PathSegment, syn::Token![::]>;
 
 /// A policy for how re-exporting crates re-export their dependencies.
 pub trait CrateReExportingPolicy {
-  /// Computes the re-exported path for a crate name.
-  fn get_re_exported_crate_path(&self, crate_name: &str) -> Option<PathPiece>;
+  /// Computes the re-exported path for a package name.
+  fn get_re_exported_crate_path(&self, package_name: &str) -> Option<PathPiece>;
 }
 
 /// A known re-exporting crate.
 pub struct KnownReExportingCrate<'a> {
-  /// The name of the crate that re-exports.
-  pub re_exporting_crate_name: &'a str,
+  /// The package name of the crate that re-exports.
+  pub re_exporting_crate_package_name: &'a str,
   /// The policy for how the crate re-exports its dependencies.
   pub crate_re_exporting_policy: &'a dyn CrateReExportingPolicy,
 }
@@ -33,100 +33,107 @@ pub struct KnownReExportingCrate<'a> {
 /// Errors that can occur when trying to resolve a crate path.
 #[derive(Error, Clone, Debug, PartialEq, Eq)]
 pub enum TryResolveCratePathError {
-  /// The crate name is ambiguous.
-  #[error("Ambiguous crate dependency {0}.")]
+  /// The crate's package name is ambiguous in the dependencies of the user crate.
+  #[error("Ambiguous crate dependency \"{0}\".")]
   AmbiguousDependency(String),
   /// The crate path could not be found.
-  #[error("Could not find crate path for {0}.")]
+  #[error("Could not find crate path for \"{0}\".")]
   CratePathNotFound(String),
   /// All known re-exporting crates failed to resolve the crate path.
   #[error(
-    "All known re-exporting crates failed to resolve crate path for {0} with the following errors: {1:?}"
+    "All known re-exporting crates failed to resolve the crate path for \"{0}\" with the following errors: {1:?}"
   )]
   AllReExportingCratesFailedToResolve(String, Vec<TryResolveCratePathError>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 enum DependencyState {
   Ambiguous(String),
   Resolved(String),
 }
 
+/// The workspace dependency resolver lazily parses the workspace `Cargo.toml`, if any workspace dependencies are present.
 struct WorkspaceDependencyResolver<'a> {
-  crate_manifest_path: &'a Path,
+  /// The path to the user's crate manifest.
+  user_crate_manifest_path: &'a Path,
   /// The key is the workspace dependency name.
-  /// The value is the original crate name.
-  resolved_workspace_dependencies: Option<BTreeMap<String, String>>,
+  /// The value is the crate's package name.
+  workspace_dependencies: Option<BTreeMap<String, String>>,
 }
 
 impl<'a> WorkspaceDependencyResolver<'a> {
   const fn new(crate_manifest_path: &'a Path) -> Self {
     Self {
-      crate_manifest_path,
-      resolved_workspace_dependencies: None,
+      user_crate_manifest_path: crate_manifest_path,
+      workspace_dependencies: None,
     }
   }
 
-  fn resolve_workspace_dependencies(workspace_cargo_toml: &Table) -> BTreeMap<String, String> {
+  fn load_workspace_cargo_manifest(workspace_cargo_toml: &Table) -> BTreeMap<String, String> {
+    // Get the `[workspace]` section.
     let workspace_section = workspace_cargo_toml
       .get("workspace")
-      .expect("The workspace section is missing")
+      .expect("The workspace section is missing!")
       .as_table()
-      .expect("The workspace section should be a table");
+      .expect("The workspace section should be a table!");
+
+    // Iterate all [workspace."dependencies"] sections.
     let dependencies_section_iter = CargoManifest::all_dependencies_tables(workspace_section);
     let dependencies_iter =
       dependencies_section_iter.flat_map(|dependencies_section| dependencies_section.iter());
 
+    // Create a mapping from the workspace dependency name to the crate's package name.
     let mut resolved_workspace_dependencies = BTreeMap::new();
     for (dependency_key, dependency_item) in dependencies_iter {
-      let original_crate_name = dependency_item
+      let crate_package_name = dependency_item
         .get("package")
-        .and_then(|package_field| package_field.as_str())
+        .and_then(Item::as_str)
         .unwrap_or(dependency_key);
       resolved_workspace_dependencies
-        .try_insert(dependency_key.to_string(), original_crate_name.to_string())
-        .expect("Duplicate workspace dependency");
+        .try_insert(dependency_key.to_string(), crate_package_name.to_string())
+        .expect("Duplicated workspace dependency names are not permitted!");
     }
     resolved_workspace_dependencies
   }
 
-  /// TODO: write test for ambiguous workspace dependency
-  fn resolve_original_crate_name_for_workspace_dependency(
+  /// Searches the workspace dependencies for the crate's package name.
+  fn resolve_crate_package_name_from_workspace_dependency(
     &mut self,
     workspace_dependency_name: &str,
   ) -> &str {
-    let workspace_dependencies = self.resolved_workspace_dependencies.get_or_insert_with(|| {
-      let workspace_cargo_toml = CargoManifest::load_workspace_cargo_toml(self.crate_manifest_path);
-      Self::resolve_workspace_dependencies(workspace_cargo_toml.as_table())
+    // Get or initialize the workspace dependencies.
+    let workspace_dependencies = self.workspace_dependencies.get_or_insert_with(|| {
+      let workspace_cargo_toml =
+        CargoManifest::load_workspace_cargo_toml(self.user_crate_manifest_path);
+      Self::load_workspace_cargo_manifest(workspace_cargo_toml.as_table())
     });
 
     let resolved_dependency = workspace_dependencies
       .get(workspace_dependency_name)
       .unwrap_or_else(|| {
         panic!(
-          "Should have found the dependency in the workspace dependencies {} {:?}",
-          workspace_dependency_name, workspace_dependencies
+          "Should have found the dependency \"{workspace_dependency_name}\" in the workspace dependencies \"{workspace_dependencies:?}\"!"
         )
       });
 
     trace!(
-      "Resolved workspace dependency: {} -> {:?}",
-      workspace_dependency_name, resolved_dependency
+      "Resolved workspace dependency name \"{workspace_dependency_name}\" to its package name \"{resolved_dependency}."
     );
     resolved_dependency
   }
 }
 
-/// The cargo manifest (`Cargo.toml`) of the crate that is being built.
-/// This can be the user's crate that either directly or indirectly depends on your crate.
-/// If there are uses of the proc-macro in your own crate, it may also point to the manifest of your own crate.
-///
 /// The [`CargoManifest`] is used to resolve a crate name to an absolute module path.
+///
+/// It stores information about the `Cargo.toml` of the crate that is currently being built
+/// and its workspace `Cargo.toml` if it exists.
+///
+/// If there are uses of your proc-macro in your own crate, it may also point to the manifest of your own crate.
 pub struct CargoManifest {
+  /// The name of the crate that is currently being built.
   user_crate_name: String,
 
-  /// The key is the original crate name.
-  /// The value is the resolved crate name.
+  /// The key is the crate's package name.
+  /// The value is the renamed crate name.
   crate_dependencies: BTreeMap<String, DependencyState>,
 }
 
@@ -135,26 +142,30 @@ impl CargoManifest {
   #[must_use = "This method returns the shared instance of the CargoManifest."]
   pub fn shared() -> &'static LazyLock<Self> {
     static LAZY_MANIFEST: LazyLock<CargoManifest> = LazyLock::new(|| {
+      // The environment variable `CARGO_MANIFEST_PATH` is not consistently set in all environments.
+
+      // Access environment variables through the `tracked_env` module to ensure that the proc-macro is recompiled when the environment variables change.
       let cargo_manifest_dir = proc_macro::tracked_env::var("CARGO_MANIFEST_DIR");
 
+      // Append `Cargo.toml` and convert it to a `PathBuf`.
       let cargo_manifest_path = cargo_manifest_dir
         .map(PathBuf::from)
         .map(|mut path| {
           path.push("Cargo.toml");
-          info!("CARGO_MANIFEST_PATH: {:?}", path);
-          proc_macro::tracked_path::path(path.to_string_lossy());
+          trace!("Loading CARGO_MANIFEST_PATH={:?}", path);
+
           assert!(
             path.exists(),
-            "Cargo.toml does not exist at: {}",
+            "Cargo.toml does not exist at \"{}\"!",
             path.display()
           );
           path
         })
-        .expect("The CARGO_MANIFEST_DIR environment variable is not defined.");
+        .expect("The CARGO_MANIFEST_DIR environment variable is not defined!");
 
       let crate_manifest = CargoManifest::parse_cargo_manifest(&cargo_manifest_path);
 
-      // parse user crate name
+      // Extract the user crate package name.
       let user_crate_name = CargoManifest::extract_user_crate_name(crate_manifest.as_table());
 
       let mut workspace_dependencies = WorkspaceDependencyResolver::new(&cargo_manifest_path);
@@ -177,7 +188,7 @@ impl CargoManifest {
     cargo_manifest
       .get("package")
       .and_then(|package_section| package_section.get("name"))
-      .and_then(|name_field| name_field.as_str())
+      .and_then(Item::as_str)
       .expect("The package name in the Cargo.toml should be a string")
       .to_string()
   }
@@ -221,32 +232,33 @@ impl CargoManifest {
     let mut resolved_dependencies = BTreeMap::new();
 
     for (dependency_key, dependency_item) in dependencies_iter {
-      // Get the actual dependency name whether it is remapped or not
-      let original_crate_name = dependency_item
-        .get("package")
-        .and_then(|package_field| package_field.as_str())
-        .unwrap_or(dependency_key);
-
-      // Check if the dependency is a workspace dependency.
+      // True if `crate-name-possibly-renamed = { workspace = true }`
       let is_workspace_dependency = dependency_item
         .get("workspace")
         .is_some_and(|workspace_field| workspace_field.as_bool() == Some(true));
 
-      let original_crate_name = if is_workspace_dependency {
+      let crate_package_name = if is_workspace_dependency {
+        // Consult the workspace `Cargo.toml` to resolve the workspace dependency to its package name.
         workspace_dependency_resolver
-          .resolve_original_crate_name_for_workspace_dependency(dependency_key)
+          .resolve_crate_package_name_from_workspace_dependency(dependency_key)
       } else {
-        original_crate_name
+        // `crate-name-renamed = { package = "crate-name-package" }` or `crate-name-renamed = "0.1"`
+        dependency_item
+          .get("package")
+          .and_then(Item::as_str)
+          // If the package field is not present, the dependency key is the package name.
+          .unwrap_or(dependency_key)
       };
 
+      // Attempt to insert the package name to renamed dependency name mapping.
       let insert_result = resolved_dependencies.try_insert(
-        original_crate_name.to_string(),
+        crate_package_name.to_string(),
         DependencyState::Resolved(dependency_key.to_string()),
       );
       if insert_result.is_err() {
         resolved_dependencies.insert(
-          original_crate_name.to_string(),
-          DependencyState::Ambiguous(original_crate_name.to_string()),
+          crate_package_name.to_string(),
+          DependencyState::Ambiguous(crate_package_name.to_string()),
         );
       }
     }
@@ -256,6 +268,7 @@ impl CargoManifest {
 
   #[must_use]
   fn parse_cargo_manifest(cargo_manifest_path: &Path) -> DocumentMut {
+    // Track the path to ensure that the proc-macro is recompiled when the `Cargo.toml` changes.
     proc_macro::tracked_path::path(cargo_manifest_path.to_string_lossy());
     let cargo_manifest_string =
       std::fs::read_to_string(cargo_manifest_path).unwrap_or_else(|err| {
@@ -307,7 +320,7 @@ impl CargoManifest {
   ) -> Result<syn::Path, TryResolveCratePathError> {
     // Check if the user crate is our own crate.
     if query_crate_name == self.user_crate_name {
-      return Ok(crate_name_to_path(query_crate_name));
+      return Ok(crate_name_to_syn_path(query_crate_name));
     }
 
     // Check if we have a direct dependency.
@@ -317,7 +330,7 @@ impl CargoManifest {
         DependencyState::Resolved(directly_mapped_crate_name) => {
           // We have a direct dependency.
           trace!("Found direct dependency: {}", directly_mapped_crate_name);
-          Ok(crate_name_to_path(directly_mapped_crate_name))
+          Ok(crate_name_to_syn_path(directly_mapped_crate_name))
         },
         DependencyState::Ambiguous(crate_name) => Err(
           TryResolveCratePathError::AmbiguousDependency(crate_name.clone()),
@@ -331,7 +344,7 @@ impl CargoManifest {
       // Check if we have a known re-exporting crate.
       let indirect_mapped_exporting_crate_name = self
         .crate_dependencies
-        .get(known_re_exporting_crate.re_exporting_crate_name);
+        .get(known_re_exporting_crate.re_exporting_crate_package_name);
       if let Some(indirect_mapped_exporting_crate_name) = indirect_mapped_exporting_crate_name {
         let indirect_mapped_exporting_crate_name = match indirect_mapped_exporting_crate_name {
           DependencyState::Resolved(crate_name) => crate_name,
@@ -350,9 +363,9 @@ impl CargoManifest {
         if let Some(re_exported_crate_path) = re_exported_crate_path {
           trace!(
             "Found re-exporting crate: {} -> {}",
-            known_re_exporting_crate.re_exporting_crate_name, query_crate_name
+            known_re_exporting_crate.re_exporting_crate_package_name, query_crate_name
           );
-          let mut path = crate_name_to_path(indirect_mapped_exporting_crate_name);
+          let mut path = crate_name_to_syn_path(indirect_mapped_exporting_crate_name);
           path.segments.extend(re_exported_crate_path);
           return Ok(path);
         }
@@ -454,10 +467,9 @@ impl CargoManifest {
     query_crate_name: &str,
     known_re_exporting_crates: &[&KnownReExportingCrate<'_>],
   ) -> Result<syn::Path, TryResolveCratePathError> {
-    info!("Trying to get the path for: {}", query_crate_name);
+    info!("Trying to get the path for: {query_crate_name}");
 
-    trace!("Trying to get the path for: {}", query_crate_name);
-    trace!("Dependencies: {:?}", self.crate_dependencies);
+    trace!("Trying to get the path for: {query_crate_name}");
 
     let ret = self.try_resolve_crate_path_internal(query_crate_name, known_re_exporting_crates);
 
@@ -478,7 +490,7 @@ impl CargoManifest {
   ) -> syn::Path {
     self
       .try_resolve_crate_path(crate_name, known_re_exporting_crates)
-      .unwrap_or_else(|_| crate_name_to_path(crate_name))
+      .unwrap_or_else(|_| crate_name_to_syn_path(crate_name))
   }
 }
 
@@ -501,14 +513,14 @@ mod tests {
       workspace_manifest_toml
         .as_ref()
         .map(|workspace_manifest_toml| {
-          WorkspaceDependencyResolver::resolve_workspace_dependencies(
+          WorkspaceDependencyResolver::load_workspace_cargo_manifest(
             workspace_manifest_toml.as_table(),
           )
         });
     let test_path = PathBuf::from("Invalid Path During Testing");
     let mut workspace_resolver = WorkspaceDependencyResolver {
-      crate_manifest_path: &test_path,
-      resolved_workspace_dependencies: workspace_dependency_map,
+      user_crate_manifest_path: &test_path,
+      workspace_dependencies: workspace_dependency_map,
     };
 
     let user_crate_name = CargoManifest::extract_user_crate_name(&crate_manifest_toml);
@@ -903,7 +915,7 @@ mod tests {
     let cargo_manifest = create_test_cargo_manifest(crate_manifest, workspace_manifest);
 
     let known_re_exporting_crate = KnownReExportingCrate {
-      re_exporting_crate_name: "bevy",
+      re_exporting_crate_package_name: "bevy",
       crate_re_exporting_policy: &BevyReExportingPolicy {},
     };
 

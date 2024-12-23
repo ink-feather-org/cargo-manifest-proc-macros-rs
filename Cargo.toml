@@ -2,6 +2,7 @@
 resolver = "2"
 
 [workspace.lints.clippy]
+let_and_return = "allow"
 needless_lifetimes = "allow"
 option_if_let_else = "allow"
 # see: https://github.com/bevyengine/bevy/pull/15375#issuecomment-2366966219

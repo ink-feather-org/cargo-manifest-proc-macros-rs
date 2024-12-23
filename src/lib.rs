@@ -3,6 +3,7 @@
 #![feature(proc_macro_tracked_env)]
 #![feature(track_path)]
 
+extern crate alloc;
 extern crate proc_macro;
 
 mod cargo_manifest;
