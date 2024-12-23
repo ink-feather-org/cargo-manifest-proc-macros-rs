@@ -152,7 +152,7 @@ impl CargoManifest {
         .map(PathBuf::from)
         .map(|mut path| {
           path.push("Cargo.toml");
-          trace!("Loading CARGO_MANIFEST_PATH={:?}", path);
+          trace!("Loading CARGO_MANIFEST_PATH={}", path.display());
 
           assert!(
             path.exists(),
@@ -161,7 +161,7 @@ impl CargoManifest {
           );
           path
         })
-        .expect("The CARGO_MANIFEST_DIR environment variable is not defined!");
+        .expect("The CARGO_MANIFEST_DIR environment variable must be defined!");
 
       let crate_manifest = CargoManifest::parse_cargo_manifest(&cargo_manifest_path);
 
@@ -296,23 +296,23 @@ impl CargoManifest {
   ///
   /// ```toml
   /// [dependencies]
-  /// original-crate-name = "0.1"
+  /// package-crate-name = "0.1"
   /// ```
   ///
-  /// The function would return `Some("original-crate-name")` for the `Item` above.
+  /// The function would return `Ok("package-crate-name")` for the `Item` above.
   ///
   /// For the remapped crate case:
   ///
   /// ```toml
   /// [dependencies]
-  /// renamed-crate-name = { version = "0.1", package = "original-crate-name" }
+  /// renamed-crate-name = { version = "0.1", package = "package-crate-name" }
   /// ```
   ///
   /// The function would return `Some("renamed-crate-name")` for the `Item` above.
   ///
   /// # Errors
   ///
-  /// If the crate name is ambiguous, an error is returned.
+  /// If the crate name is ambiguous or not found, an error is returned.
   fn try_resolve_crate_path_internal(
     &self,
     query_crate_name: &str,
@@ -329,7 +329,10 @@ impl CargoManifest {
       return match directly_mapped_crate_name {
         DependencyState::Resolved(directly_mapped_crate_name) => {
           // We have a direct dependency.
-          trace!("Found direct dependency: {}", directly_mapped_crate_name);
+          trace!(
+            "Found direct dependency: \"{}\"",
+            directly_mapped_crate_name
+          );
           Ok(crate_name_to_syn_path(directly_mapped_crate_name))
         },
         DependencyState::Ambiguous(crate_name) => Err(
@@ -390,18 +393,17 @@ impl CargoManifest {
   #[must_use]
   fn resolve_workspace_manifest_path(cargo_manifest_path: &Path) -> PathBuf {
     let stdout = Command::new(
-      proc_macro::tracked_env::var("CARGO")
-        .expect("The CARGO environment variable is not defined."),
+      proc_macro::tracked_env::var("CARGO").expect("The CARGO environment variable must be set!"),
     )
     .arg("locate-project")
     .args(["--workspace", "--message-format=plain"])
     .arg(format!("--manifest-path={}", cargo_manifest_path.display()))
     .output()
-    .expect("Failed to run `cargo locate-project`")
+    .expect("Failed to run `cargo locate-project`!")
     .stdout;
 
     let path_string =
-      String::from_utf8(stdout).expect("Failed to parse `cargo locate-project` output");
+      String::from_utf8(stdout).expect("Failed to parse `cargo locate-project` output!");
     let path_str = path_string.trim();
 
     let resolved_path = if path_str.is_empty() {
@@ -415,7 +417,7 @@ impl CargoManifest {
     };
 
     trace!(
-      "Resolved workspace manifest path: {}",
+      "Resolved workspace manifest path: \"{}\"",
       resolved_path.display()
     );
 
@@ -467,14 +469,12 @@ impl CargoManifest {
     query_crate_name: &str,
     known_re_exporting_crates: &[&KnownReExportingCrate<'_>],
   ) -> Result<syn::Path, TryResolveCratePathError> {
-    info!("Trying to get the path for: {query_crate_name}");
-
-    trace!("Trying to get the path for: {query_crate_name}");
+    info!("Trying to get the path for: \"{query_crate_name}\"");
 
     let ret = self.try_resolve_crate_path_internal(query_crate_name, known_re_exporting_crates);
 
     info!(
-      "Computed path: {:?} for {}",
+      "Computed path: \"{:?}\" for \"{}\"",
       ret.as_ref().map(pretty_format_syn_path),
       query_crate_name
     );
@@ -495,6 +495,7 @@ impl CargoManifest {
 }
 
 #[cfg(test)]
+#[doc(hidden)]
 mod tests {
   use super::*;
 

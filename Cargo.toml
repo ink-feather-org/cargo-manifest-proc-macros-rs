@@ -79,7 +79,7 @@ strip = "debuginfo"
 
 [package]
 name = "cargo-manifest-proc-macros"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Find the syn::Path to your own crate from proc-macros reliably."

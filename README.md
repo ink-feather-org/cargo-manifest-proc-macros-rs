@@ -83,7 +83,7 @@ impl CrateReExportingPolicy for SuperCrateReExportingPolicy {
 
 /// We need to associate the re-exporting policy with the re-exporting crate name.
 const SUPER_RE_EXPORTER_RESOLVER: KnownReExportingCrate<'_> = KnownReExportingCrate {
-  re_exporting_crate_name: "my-awesome-super-crate",
+  re_exporting_crate_package_name: "my-awesome-super-crate",
   crate_re_exporting_policy: &SuperCrateReExportingPolicy {},
 };
 
