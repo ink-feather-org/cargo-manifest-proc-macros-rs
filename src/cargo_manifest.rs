@@ -5,7 +5,7 @@ use alloc::collections::BTreeMap;
 use std::{
   path::{Path, PathBuf},
   process::Command,
-  sync::LazyLock,
+  sync::{Mutex, MutexGuard},
 };
 use thiserror::Error;
 use toml_edit::{DocumentMut, Item, Table};
@@ -61,6 +61,7 @@ struct WorkspaceDependencyResolver<'a> {
 }
 
 impl<'a> WorkspaceDependencyResolver<'a> {
+  #[must_use = "This is a constructor."]
   const fn new(crate_manifest_path: &'a Path) -> Self {
     Self {
       user_crate_manifest_path: crate_manifest_path,
@@ -68,6 +69,7 @@ impl<'a> WorkspaceDependencyResolver<'a> {
     }
   }
 
+  #[must_use]
   fn load_workspace_cargo_manifest(workspace_cargo_toml: &Table) -> BTreeMap<String, String> {
     // Get the `[workspace]` section.
     let workspace_section = workspace_cargo_toml
@@ -96,6 +98,7 @@ impl<'a> WorkspaceDependencyResolver<'a> {
   }
 
   /// Searches the workspace dependencies for the crate's package name.
+  #[must_use]
   fn resolve_crate_package_name_from_workspace_dependency(
     &mut self,
     workspace_dependency_name: &str,
@@ -132,6 +135,9 @@ pub struct CargoManifest {
   /// The name of the crate that is currently being built.
   user_crate_name: String,
 
+  /// The modified time of the `Cargo.toml`, when the `CargoManifest` instance was created.
+  cargo_manifest_mtime: std::time::SystemTime,
+
   /// The key is the crate's package name.
   /// The value is the renamed crate name.
   crate_dependencies: BTreeMap<String, DependencyState>,
@@ -140,47 +146,114 @@ pub struct CargoManifest {
 impl CargoManifest {
   /// Returns a global shared instance of the [`CargoManifest`] struct.
   #[must_use = "This method returns the shared instance of the CargoManifest."]
-  pub fn shared() -> &'static LazyLock<Self> {
-    static LAZY_MANIFEST: LazyLock<CargoManifest> = LazyLock::new(|| {
-      // The environment variable `CARGO_MANIFEST_PATH` is not consistently set in all environments.
+  #[expect(clippy::mut_mutex_lock)]
+  pub fn shared() -> MutexGuard<'static, Self> {
+    static MANIFESTS: Mutex<BTreeMap<PathBuf, &'static Mutex<CargoManifest>>> =
+      Mutex::new(BTreeMap::new());
 
-      // Access environment variables through the `tracked_env` module to ensure that the proc-macro is recompiled when the environment variables change.
-      let cargo_manifest_dir = proc_macro::tracked_env::var("CARGO_MANIFEST_DIR");
+    // Get the current cargo manifest path and its modified time.
+    // Rust-Analyzer keeps the proc macro server running between invocations and only the environment variables change.
+    // This means 'static variables are not reset between invocations for different crates.
+    let current_cargo_manifest_path = Self::get_current_cargo_manifest_path();
+    let current_cargo_manifest_mtime = Self::get_cargo_manifest_mtime(&current_cargo_manifest_path);
 
-      // Append `Cargo.toml` and convert it to a `PathBuf`.
-      let cargo_manifest_path = cargo_manifest_dir
-        .map(PathBuf::from)
-        .map(|mut path| {
-          path.push("Cargo.toml");
-          trace!("Loading CARGO_MANIFEST_PATH={}", path.display());
+    let mut manifests = MANIFESTS.lock().unwrap();
 
-          assert!(
-            path.exists(),
-            "Cargo.toml does not exist at \"{}\"!",
-            path.display()
-          );
-          path
-        })
-        .expect("The CARGO_MANIFEST_DIR environment variable must be defined!");
+    // Get the cached shared instance of the CargoManifest.
+    let existing_shared_instance =
+      manifests
+        .get_mut(&current_cargo_manifest_path)
+        .map(|cargo_manifest_mutex| {
+          let mut shared_instance = cargo_manifest_mutex.lock().unwrap();
+          // We do this to avoid leaking a new CargoManifest instance, when a Cargo.toml we had already parsed previously is changed.
+          if shared_instance.cargo_manifest_mtime != current_cargo_manifest_mtime {
+            // The mtime of the crate manifest has changed.
+            // We need to recompute the CargoManifest.
 
-      let crate_manifest = CargoManifest::parse_cargo_manifest(&cargo_manifest_path);
+            let cargo_manifest = Self::new_with_current_env_vars(
+              &current_cargo_manifest_path,
+              current_cargo_manifest_mtime,
+            );
 
-      // Extract the user crate package name.
-      let user_crate_name = CargoManifest::extract_user_crate_name(crate_manifest.as_table());
+            // Overwrite the cache with the new cargo manifest version.
+            *shared_instance = cargo_manifest;
+          }
 
-      let mut workspace_dependencies = WorkspaceDependencyResolver::new(&cargo_manifest_path);
+          let guard = cargo_manifest_mutex.lock().unwrap();
+          guard
+        });
 
-      let resolved_dependencies = CargoManifest::extract_dependency_map_for_cargo_manifest(
-        crate_manifest.as_table(),
-        &mut workspace_dependencies,
-      );
+    let shared_instance = existing_shared_instance.unwrap_or_else(move || {
+      // A new Cargo.toml has been requested, so we have to leak a new CargoManifest instance.
+      let new_shared_instance = Box::leak(Box::new(Mutex::new(Self::new_with_current_env_vars(
+        &current_cargo_manifest_path,
+        current_cargo_manifest_mtime,
+      ))));
 
-      CargoManifest {
-        user_crate_name,
-        crate_dependencies: resolved_dependencies,
-      }
+      // Overwrite the cache with the new cargo manifest version.
+      manifests.insert(current_cargo_manifest_path, new_shared_instance);
+
+      new_shared_instance.lock().unwrap()
     });
-    &LAZY_MANIFEST
+
+    shared_instance
+  }
+
+  #[must_use]
+  fn get_current_cargo_manifest_path() -> PathBuf {
+    // The environment variable `CARGO_MANIFEST_PATH` is not consistently set in all environments.
+
+    // Access environment variables through the `tracked_env` module to ensure that the proc-macro is re-run when the environment variables change.
+    let cargo_manifest_dir = proc_macro::tracked_env::var("CARGO_MANIFEST_DIR");
+
+    // Append `Cargo.toml` and convert it to a `PathBuf`.
+    let cargo_manifest_path = cargo_manifest_dir
+      .map(PathBuf::from)
+      .map(|mut path| {
+        path.push("Cargo.toml");
+        trace!("Loading CARGO_MANIFEST_PATH={}", path.display());
+
+        assert!(
+          path.exists(),
+          "Cargo.toml does not exist at \"{}\"!",
+          path.display()
+        );
+        path
+      })
+      .expect("The CARGO_MANIFEST_DIR environment variable must be defined!");
+    cargo_manifest_path
+  }
+
+  #[must_use]
+  fn get_cargo_manifest_mtime(cargo_manifest_path: &Path) -> std::time::SystemTime {
+    std::fs::metadata(cargo_manifest_path)
+      .expect("Failed to get metadata for the crate manifest!")
+      .modified()
+      .expect("Failed to get the modified time of the crate manifest!")
+  }
+
+  #[must_use = "This is a constructor."]
+  fn new_with_current_env_vars(
+    cargo_manifest_path: &Path,
+    cargo_manifest_mtime: std::time::SystemTime,
+  ) -> Self {
+    let crate_manifest = Self::parse_cargo_manifest(cargo_manifest_path);
+
+    // Extract the user crate package name.
+    let user_crate_name = Self::extract_user_crate_name(crate_manifest.as_table());
+
+    let mut workspace_dependencies = WorkspaceDependencyResolver::new(cargo_manifest_path);
+
+    let resolved_dependencies = Self::extract_dependency_map_for_cargo_manifest(
+      crate_manifest.as_table(),
+      &mut workspace_dependencies,
+    );
+
+    Self {
+      user_crate_name,
+      cargo_manifest_mtime,
+      crate_dependencies: resolved_dependencies,
+    }
   }
 
   #[must_use]
@@ -268,7 +341,7 @@ impl CargoManifest {
 
   #[must_use]
   fn parse_cargo_manifest(cargo_manifest_path: &Path) -> DocumentMut {
-    // Track the path to ensure that the proc-macro is recompiled when the `Cargo.toml` changes.
+    // Track the path to ensure that the proc-macro is re-run when the `Cargo.toml` changes.
     proc_macro::tracked_path::path(cargo_manifest_path.to_string_lossy());
     let cargo_manifest_string =
       std::fs::read_to_string(cargo_manifest_path).unwrap_or_else(|err| {
@@ -532,6 +605,7 @@ mod tests {
 
     CargoManifest {
       user_crate_name,
+      cargo_manifest_mtime: std::time::SystemTime::UNIX_EPOCH,
       crate_dependencies: resolved_dependencies,
     }
   }
