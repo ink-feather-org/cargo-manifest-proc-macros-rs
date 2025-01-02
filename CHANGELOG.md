@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2025-01-02
+
+* Fixed a deadlock.
+
 ## [0.2.1] - 2025-01-01
 
 * Fixed a bug where rust analyser would resolve the crate paths incorrectly due to caching of `'static` lifetimes.

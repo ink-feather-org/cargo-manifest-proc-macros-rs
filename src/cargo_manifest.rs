@@ -162,7 +162,7 @@ impl CargoManifest {
     // Get the cached shared instance of the CargoManifest.
     let existing_shared_instance =
       manifests
-        .get_mut(&current_cargo_manifest_path)
+        .get(&current_cargo_manifest_path)
         .map(|cargo_manifest_mutex| {
           let mut shared_instance = cargo_manifest_mutex.lock().unwrap();
           // We do this to avoid leaking a new CargoManifest instance, when a Cargo.toml we had already parsed previously is changed.
@@ -179,8 +179,7 @@ impl CargoManifest {
             *shared_instance = cargo_manifest;
           }
 
-          let guard = cargo_manifest_mutex.lock().unwrap();
-          guard
+          shared_instance
         });
 
     let shared_instance = existing_shared_instance.unwrap_or_else(move || {
