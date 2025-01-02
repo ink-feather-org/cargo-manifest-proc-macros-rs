@@ -4,14 +4,14 @@
 [![Rust-Main-CI](https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/actions/workflows/rust_main.yml/badge.svg)](https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/actions/workflows/rust_main.yml)
 [![docs.rs](https://docs.rs/cargo-manifest-proc-macros/badge.svg)](https://docs.rs/cargo-manifest-proc-macros)
 [![crates.io](https://img.shields.io/crates/v/cargo-manifest-proc-macros.svg)](https://crates.io/crates/cargo-manifest-proc-macros)
-[![rustc](https://img.shields.io/badge/rustc-nightly-lightgrey)](https://doc.rust-lang.org/nightly/std/)
-
-## Requirements
-
-`cargo-manifest-proc-macros` is a library for creating proc-macros.
-It provides a reliably way to compute the [`syn::Path`] to other crates.
+[![rustc](https://img.shields.io/badge/rustc-stable-lightgrey)](https://doc.rust-lang.org/stable/std/)
 
 ## What can this crate do?
+
+`cargo-manifest-proc-macros` is a library for creating proc-macros.
+It provides a reliably way to compute the [`syn::Path`](https://docs.rs/syn/latest/syn/struct.Path.html) to other crates.
+
+## How to use this crate?
 
 Proc-macro crates are usually tightly coupled to other crates and need to know the module path to them.
 
