@@ -42,7 +42,9 @@ jobs:
 
       - name: Check format
         run: cargo fmt --all --check
-      - name: Clippy
+      - name: Clippy only default features
+        run: cargo clippy --workspace --all-targets
+      - name: Clippy all features
         run: cargo clippy --workspace --all-features --all-targets
       - name: Build
         run: cargo build --verbose

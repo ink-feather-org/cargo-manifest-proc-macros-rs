@@ -13,6 +13,21 @@ use tracing::{info, trace};
 
 use crate::syn_utils::{crate_name_to_syn_path, pretty_format_syn_path};
 
+fn get_env_var(name: &str) -> String {
+  #[cfg(not(feature = "nightly"))]
+  let env_var = std::env::var(name);
+  #[cfg(feature = "nightly")]
+  let env_var = proc_macro::tracked_env::var(name);
+  env_var.unwrap_or_else(|_| panic!("The environment variable {name} must be set!"))
+}
+
+fn track_path(path: impl AsRef<str>) {
+  #[cfg(not(feature = "nightly"))]
+  let _ = path;
+  #[cfg(feature = "nightly")]
+  proc_macro::tracked_path::path(path);
+}
+
 /// A piece of a [`syn::Path`].
 pub type PathPiece = syn::punctuated::Punctuated<syn::PathSegment, syn::Token![::]>;
 
@@ -90,9 +105,13 @@ impl<'a> WorkspaceDependencyResolver<'a> {
         .get("package")
         .and_then(Item::as_str)
         .unwrap_or(dependency_key);
-      resolved_workspace_dependencies
-        .try_insert(dependency_key.to_string(), crate_package_name.to_string())
-        .expect("Duplicated workspace dependency names are not permitted!");
+      if resolved_workspace_dependencies
+        .insert(dependency_key.to_string(), crate_package_name.to_string())
+        .is_some()
+      {
+        // There was an old value for the key, which should not happen.
+        panic!("Duplicated workspace dependency names are not permitted!");
+      }
     }
     resolved_workspace_dependencies
   }
@@ -203,23 +222,13 @@ impl CargoManifest {
     // The environment variable `CARGO_MANIFEST_PATH` is not consistently set in all environments.
 
     // Access environment variables through the `tracked_env` module to ensure that the proc-macro is re-run when the environment variables change.
-    let cargo_manifest_dir = proc_macro::tracked_env::var("CARGO_MANIFEST_DIR");
-
-    // Append `Cargo.toml` and convert it to a `PathBuf`.
-    let cargo_manifest_path = cargo_manifest_dir
-      .map(PathBuf::from)
-      .map(|mut path| {
-        path.push("Cargo.toml");
-        trace!("Loading CARGO_MANIFEST_PATH={}", path.display());
-
-        assert!(
-          path.exists(),
-          "Cargo.toml does not exist at \"{}\"!",
-          path.display()
-        );
-        path
-      })
-      .expect("The CARGO_MANIFEST_DIR environment variable must be defined!");
+    let mut cargo_manifest_path = PathBuf::from(get_env_var("CARGO_MANIFEST_DIR"));
+    cargo_manifest_path.push("Cargo.toml");
+    assert!(
+      cargo_manifest_path.exists(),
+      "Cargo.toml does not exist at \"{}\"!",
+      cargo_manifest_path.display()
+    );
     cargo_manifest_path
   }
 
@@ -323,14 +332,15 @@ impl CargoManifest {
       };
 
       // Attempt to insert the package name to renamed dependency name mapping.
-      let insert_result = resolved_dependencies.try_insert(
-        crate_package_name.to_string(),
-        DependencyState::Resolved(dependency_key.to_string()),
-      );
-      if insert_result.is_err() {
+      if resolved_dependencies.contains_key(crate_package_name) {
         resolved_dependencies.insert(
           crate_package_name.to_string(),
           DependencyState::Ambiguous(crate_package_name.to_string()),
+        );
+      } else {
+        resolved_dependencies.insert(
+          crate_package_name.to_string(),
+          DependencyState::Resolved(dependency_key.to_string()),
         );
       }
     }
@@ -341,7 +351,7 @@ impl CargoManifest {
   #[must_use]
   fn parse_cargo_manifest(cargo_manifest_path: &Path) -> DocumentMut {
     // Track the path to ensure that the proc-macro is re-run when the `Cargo.toml` changes.
-    proc_macro::tracked_path::path(cargo_manifest_path.to_string_lossy());
+    track_path(cargo_manifest_path.to_string_lossy());
     let cargo_manifest_string =
       std::fs::read_to_string(cargo_manifest_path).unwrap_or_else(|err| {
         panic!(
@@ -464,15 +474,13 @@ impl CargoManifest {
   /// https://github.com/bkchr/proc-macro-crate/blob/a5939f3fbf94279b45902119d97f881fefca6a0d/src/lib.rs#L243
   #[must_use]
   fn resolve_workspace_manifest_path(cargo_manifest_path: &Path) -> PathBuf {
-    let stdout = Command::new(
-      proc_macro::tracked_env::var("CARGO").expect("The CARGO environment variable must be set!"),
-    )
-    .arg("locate-project")
-    .args(["--workspace", "--message-format=plain"])
-    .arg(format!("--manifest-path={}", cargo_manifest_path.display()))
-    .output()
-    .expect("Failed to run `cargo locate-project`!")
-    .stdout;
+    let stdout = Command::new(get_env_var("CARGO"))
+      .arg("locate-project")
+      .args(["--workspace", "--message-format=plain"])
+      .arg(format!("--manifest-path={}", cargo_manifest_path.display()))
+      .output()
+      .expect("Failed to run `cargo locate-project`!")
+      .stdout;
 
     let path_string =
       String::from_utf8(stdout).expect("Failed to parse `cargo locate-project` output!");

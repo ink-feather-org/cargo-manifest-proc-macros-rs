@@ -1,9 +1,9 @@
 #![doc = include_str!("../README.md")]
-#![feature(map_try_insert)]
-#![feature(proc_macro_tracked_env)]
-#![feature(track_path)]
+#![cfg_attr(feature = "nightly", feature(proc_macro_tracked_env))]
+#![cfg_attr(feature = "nightly", feature(track_path))]
 
 extern crate alloc;
+#[cfg(feature = "nightly")]
 extern crate proc_macro;
 
 mod cargo_manifest;

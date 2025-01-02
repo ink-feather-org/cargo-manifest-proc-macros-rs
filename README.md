@@ -11,8 +11,6 @@
 `cargo-manifest-proc-macros` is a library for creating proc-macros.
 It provides a reliably way to compute the [`syn::Path`] to other crates.
 
-This crate requires a nightly compiler.
-
 ## What can this crate do?
 
 Proc-macro crates are usually tightly coupled to other crates and need to know the module path to them.
@@ -100,6 +98,10 @@ pub fn derive_your_proc_macro(input: TokenStream) -> TokenStream {
   TokenStream::default()
 }
 ```
+
+## Features
+
+* `nightly` - Enables nightly features. This requires a nightly compiler.
 
 ## License
 

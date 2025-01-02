@@ -79,14 +79,17 @@ strip = "debuginfo"
 
 [package]
 name = "cargo-manifest-proc-macros"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Find the syn::Path to your own crate from proc-macros reliably."
 homepage = "https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs"
 repository = "https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs"
 categories = ["development-tools::procedural-macro-helpers"]
-keywords = ["proc-macro", "nightly"]
+keywords = ["proc-macro"]
+
+[features]
+nightly = []
 
 [dependencies]
 tracing = { version = "0.1", default-features = false }
