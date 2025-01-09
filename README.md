@@ -36,6 +36,8 @@ The [`CargoManifest`] struct is capable of computing the [`syn::Path`] to the cr
 ## Example (non-re-exporting)
 
 ```rust
+# #[cfg(feature = "proc-macro")]
+# mod _mod {
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
@@ -49,6 +51,7 @@ pub fn derive_your_proc_macro(input: TokenStream) -> TokenStream {
   let path_to_your_crate: syn::Path = CargoManifest::shared().resolve_crate_path("my-awesome-crate", &[]);
   TokenStream::default()
 }
+# }
 ```
 
 ## Example (re-exporting)
@@ -56,6 +59,9 @@ pub fn derive_your_proc_macro(input: TokenStream) -> TokenStream {
 In this example the user may depend on either `my-awesome-super-crate` or `my-awesome-crate` to gain access to the proc-macros and features of `my-awesome-crate`.
 
 ```rust
+# #[cfg(feature = "proc-macro")]
+# mod _mod {
+#![cfg(feature = "proc-macro")]
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
@@ -97,6 +103,7 @@ pub fn derive_your_proc_macro(input: TokenStream) -> TokenStream {
   let path_to_your_crate: syn::Path = CargoManifest::shared().resolve_crate_path("my-awesome-crate", KNOWN_RE_EXPORTING_CRATES);
   TokenStream::default()
 }
+# }
 ```
 
 ## Features

@@ -14,17 +14,17 @@ use tracing::{info, trace};
 use crate::syn_utils::{crate_name_to_syn_path, pretty_format_syn_path};
 
 fn get_env_var(name: &str) -> String {
-  #[cfg(not(feature = "nightly"))]
+  #[cfg(not(all(feature = "nightly", feature = "proc-macro")))]
   let env_var = std::env::var(name);
-  #[cfg(feature = "nightly")]
+  #[cfg(all(feature = "nightly", feature = "proc-macro"))]
   let env_var = proc_macro::tracked_env::var(name);
   env_var.unwrap_or_else(|_| panic!("The environment variable {name} must be set!"))
 }
 
 fn track_path(path: impl AsRef<str>) {
-  #[cfg(not(feature = "nightly"))]
+  #[cfg(not(all(feature = "nightly", feature = "proc-macro")))]
   let _ = path;
-  #[cfg(feature = "nightly")]
+  #[cfg(all(feature = "nightly", feature = "proc-macro"))]
   proc_macro::tracked_path::path(path);
 }
 
@@ -70,17 +70,20 @@ enum DependencyState {
 struct WorkspaceDependencyResolver<'a> {
   /// The path to the user's crate manifest.
   user_crate_manifest_path: &'a Path,
+  /// The modified time of the workspace `Cargo.toml`, when the `WorkspaceDependencyResolver` instance was created.
+  workspace_manifest_mtime: Option<std::time::SystemTime>,
   /// The key is the workspace dependency name.
   /// The value is the crate's package name.
-  workspace_dependencies: Option<BTreeMap<String, String>>,
+  workspace_dependencies_map: Option<BTreeMap<String, String>>,
 }
 
 impl<'a> WorkspaceDependencyResolver<'a> {
   #[must_use = "This is a constructor."]
-  const fn new(crate_manifest_path: &'a Path) -> Self {
+  const fn new(user_crate_manifest_path: &'a Path) -> Self {
     Self {
-      user_crate_manifest_path: crate_manifest_path,
-      workspace_dependencies: None,
+      user_crate_manifest_path,
+      workspace_manifest_mtime: None,
+      workspace_dependencies_map: None,
     }
   }
 
@@ -123,9 +126,13 @@ impl<'a> WorkspaceDependencyResolver<'a> {
     workspace_dependency_name: &str,
   ) -> &str {
     // Get or initialize the workspace dependencies.
-    let workspace_dependencies = self.workspace_dependencies.get_or_insert_with(|| {
+    let workspace_dependencies = self.workspace_dependencies_map.get_or_insert_with(|| {
+      let workspace_cargo_toml_path =
+        CargoManifest::resolve_workspace_manifest_path(self.user_crate_manifest_path);
+      self.workspace_manifest_mtime =
+        CargoManifest::get_cargo_manifest_mtime(&workspace_cargo_toml_path).ok();
       let workspace_cargo_toml =
-        CargoManifest::load_workspace_cargo_toml(self.user_crate_manifest_path);
+        CargoManifest::load_workspace_cargo_toml(&workspace_cargo_toml_path);
       Self::load_workspace_cargo_manifest(workspace_cargo_toml.as_table())
     });
 
@@ -138,7 +145,7 @@ impl<'a> WorkspaceDependencyResolver<'a> {
       });
 
     trace!(
-      "Resolved workspace dependency name \"{workspace_dependency_name}\" to its package name \"{resolved_dependency}."
+      "Resolved workspace dependency name \"{workspace_dependency_name}\" to its package name \"{resolved_dependency}\"."
     );
     resolved_dependency
   }
@@ -155,7 +162,10 @@ pub struct CargoManifest {
   user_crate_name: String,
 
   /// The modified time of the `Cargo.toml`, when the `CargoManifest` instance was created.
-  cargo_manifest_mtime: std::time::SystemTime,
+  user_crate_manifest_mtime: std::time::SystemTime,
+
+  /// The modified time of the workspace `Cargo.toml`, when the `CargoManifest` instance was created.
+  workspace_manifest_mtime: Option<std::time::SystemTime>,
 
   /// The key is the crate's package name.
   /// The value is the renamed crate name.
@@ -174,7 +184,8 @@ impl CargoManifest {
     // Rust-Analyzer keeps the proc macro server running between invocations and only the environment variables change.
     // This means 'static variables are not reset between invocations for different crates.
     let current_cargo_manifest_path = Self::get_current_cargo_manifest_path();
-    let current_cargo_manifest_mtime = Self::get_cargo_manifest_mtime(&current_cargo_manifest_path);
+    let current_cargo_manifest_mtime = Self::get_cargo_manifest_mtime(&current_cargo_manifest_path)
+      .expect("The mtime of the crate manifest should be present!");
 
     let mut manifests = MANIFESTS.lock().unwrap();
 
@@ -184,8 +195,24 @@ impl CargoManifest {
         .get(&current_cargo_manifest_path)
         .map(|cargo_manifest_mutex| {
           let mut shared_instance = cargo_manifest_mutex.lock().unwrap();
+
+          // Check if the mtime of the crate manifest has changed.
+          let mut a_relevant_cargo_toml_changed =
+            shared_instance.user_crate_manifest_mtime != current_cargo_manifest_mtime;
+
+          // Check if the mtime of the workspace manifest has changed.
+          if shared_instance.workspace_manifest_mtime.is_some() {
+            let workspace_cargo_toml_path =
+              Self::resolve_workspace_manifest_path(&current_cargo_manifest_path);
+            let workspace_cargo_toml_mtime =
+              Self::get_cargo_manifest_mtime(&workspace_cargo_toml_path);
+
+            a_relevant_cargo_toml_changed |=
+              shared_instance.workspace_manifest_mtime != workspace_cargo_toml_mtime.ok();
+          }
+
           // We do this to avoid leaking a new CargoManifest instance, when a Cargo.toml we had already parsed previously is changed.
-          if shared_instance.cargo_manifest_mtime != current_cargo_manifest_mtime {
+          if a_relevant_cargo_toml_changed {
             // The mtime of the crate manifest has changed.
             // We need to recompute the CargoManifest.
 
@@ -232,18 +259,17 @@ impl CargoManifest {
     cargo_manifest_path
   }
 
-  #[must_use]
-  fn get_cargo_manifest_mtime(cargo_manifest_path: &Path) -> std::time::SystemTime {
-    std::fs::metadata(cargo_manifest_path)
-      .expect("Failed to get metadata for the crate manifest!")
-      .modified()
-      .expect("Failed to get the modified time of the crate manifest!")
+  #[expect(clippy::missing_errors_doc)]
+  fn get_cargo_manifest_mtime(
+    cargo_manifest_path: &Path,
+  ) -> Result<std::time::SystemTime, std::io::Error> {
+    std::fs::metadata(cargo_manifest_path).and_then(|metadata| metadata.modified())
   }
 
   #[must_use = "This is a constructor."]
   fn new_with_current_env_vars(
     cargo_manifest_path: &Path,
-    cargo_manifest_mtime: std::time::SystemTime,
+    user_crate_manifest_mtime: std::time::SystemTime,
   ) -> Self {
     let crate_manifest = Self::parse_cargo_manifest(cargo_manifest_path);
 
@@ -257,9 +283,12 @@ impl CargoManifest {
       &mut workspace_dependencies,
     );
 
+    let workspace_manifest_mtime = workspace_dependencies.workspace_manifest_mtime;
+
     Self {
       user_crate_name,
-      cargo_manifest_mtime,
+      user_crate_manifest_mtime,
+      workspace_manifest_mtime,
       crate_dependencies: resolved_dependencies,
     }
   }
@@ -474,13 +503,24 @@ impl CargoManifest {
   /// https://github.com/bkchr/proc-macro-crate/blob/a5939f3fbf94279b45902119d97f881fefca6a0d/src/lib.rs#L243
   #[must_use]
   fn resolve_workspace_manifest_path(cargo_manifest_path: &Path) -> PathBuf {
-    let stdout = Command::new(get_env_var("CARGO"))
+    let cmd_result = Command::new(get_env_var("CARGO"))
       .arg("locate-project")
       .args(["--workspace", "--message-format=plain"])
       .arg(format!("--manifest-path={}", cargo_manifest_path.display()))
       .output()
-      .expect("Failed to run `cargo locate-project`!")
-      .stdout;
+      .expect("Failed to run `cargo locate-project`!");
+    let stdout = cmd_result.stdout;
+    let stderr = cmd_result.stderr;
+
+    trace!(
+      "Ran `cargo locate-project --workspace --message-format=plain --manifest-path={}`",
+      cargo_manifest_path.display()
+    );
+    trace!(
+      "`cargo locate-project` \n# stdout: \n\"{}\"\n# stderr:\n\"{}\"",
+      String::from_utf8_lossy(&stdout),
+      String::from_utf8_lossy(&stderr)
+    );
 
     let path_string =
       String::from_utf8(stdout).expect("Failed to parse `cargo locate-project` output!");
@@ -505,10 +545,8 @@ impl CargoManifest {
   }
 
   #[must_use]
-  fn load_workspace_cargo_toml(cargo_manifest_path: &Path) -> DocumentMut {
-    let workspace_cargo_toml_path = Self::resolve_workspace_manifest_path(cargo_manifest_path);
-
-    let workspace_cargo_toml_string = std::fs::read_to_string(workspace_cargo_toml_path.clone())
+  fn load_workspace_cargo_toml(workspace_cargo_toml_path: &Path) -> DocumentMut {
+    let workspace_cargo_toml_string = std::fs::read_to_string(workspace_cargo_toml_path)
       .unwrap_or_else(|err| {
         panic!(
           "Unable to read workspace cargo manifest: {} - {err}",
@@ -601,7 +639,8 @@ mod tests {
     let test_path = PathBuf::from("Invalid Path During Testing");
     let mut workspace_resolver = WorkspaceDependencyResolver {
       user_crate_manifest_path: &test_path,
-      workspace_dependencies: workspace_dependency_map,
+      workspace_manifest_mtime: None,
+      workspace_dependencies_map: workspace_dependency_map,
     };
 
     let user_crate_name = CargoManifest::extract_user_crate_name(&crate_manifest_toml);
@@ -612,7 +651,8 @@ mod tests {
 
     CargoManifest {
       user_crate_name,
-      cargo_manifest_mtime: std::time::SystemTime::UNIX_EPOCH,
+      user_crate_manifest_mtime: std::time::SystemTime::UNIX_EPOCH,
+      workspace_manifest_mtime: None,
       crate_dependencies: resolved_dependencies,
     }
   }
@@ -1010,5 +1050,217 @@ mod tests {
       ),
       expected_path
     );
+  }
+}
+
+#[cfg(all(not(feature = "proc-macro"), test))]
+#[cfg(test)]
+#[doc(hidden)]
+mod fs_tests {
+  use serial_test::serial;
+  use std::io::{Seek, Write};
+  use tracing_test::traced_test;
+
+  use super::*;
+
+  #[test]
+  #[serial]
+  fn modify_crate_manifest() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+
+    let initial_crate_manifest = r#"
+      [package]
+      name = "test"
+
+      [dependencies]
+      test_dep = "0.1"
+    "#;
+
+    let updated_crated_manifest = r#"
+      [package]
+      name = "test"
+
+      [dependencies]
+      test_dep_renamed = { package = "test_dep" }
+    "#;
+
+    let crate_manifest_path = tmp_dir.path().join("Cargo.toml");
+    let mut crate_manifest_file = std::fs::File::create_new(&crate_manifest_path).unwrap();
+    crate_manifest_file
+      .write_all(initial_crate_manifest.as_bytes())
+      .unwrap();
+    crate_manifest_file.flush().unwrap();
+    // set env var
+    #[expect(unsafe_code)]
+    // SAFETY: The test is marked as serial, so it is safe to set the environment variable.
+    unsafe {
+      std::env::set_var("CARGO_MANIFEST_DIR", crate_manifest_path.parent().unwrap());
+    };
+    let initial_mtime = CargoManifest::get_cargo_manifest_mtime(&crate_manifest_path).unwrap();
+
+    let cargo_manifest = CargoManifest::shared();
+
+    // resolve the path for the initial crate manifest
+    let crate_to_resolve = "test_dep";
+    let expected_path = "::test_dep".to_string();
+    assert_eq!(
+      pretty_format_syn_path(
+        cargo_manifest
+          .try_resolve_crate_path(crate_to_resolve, &[])
+          .as_ref()
+          .unwrap()
+      ),
+      expected_path
+    );
+
+    // update the crate manifest
+    crate_manifest_file
+      .seek(std::io::SeekFrom::Start(0))
+      .unwrap();
+    crate_manifest_file
+      .write_all(updated_crated_manifest.as_bytes())
+      .unwrap();
+    // update the mtime
+    crate_manifest_file
+      .set_modified(std::time::SystemTime::now())
+      .unwrap();
+    crate_manifest_file.flush().unwrap();
+    let new_mtime = CargoManifest::get_cargo_manifest_mtime(&crate_manifest_path).unwrap();
+    drop(cargo_manifest);
+    let cargo_manifest = CargoManifest::shared();
+
+    // check that the mtime has changed
+    assert_ne!(initial_mtime, new_mtime);
+
+    // resolve the path for the updated crate manifest
+    let expected_path = "::test_dep_renamed".to_string();
+    assert_eq!(
+      pretty_format_syn_path(
+        cargo_manifest
+          .try_resolve_crate_path(crate_to_resolve, &[])
+          .as_ref()
+          .unwrap()
+      ),
+      expected_path
+    );
+    drop(cargo_manifest);
+  }
+
+  fn create_src_lib(path: &Path) {
+    let src_dir = path.join("src");
+    std::fs::create_dir(&src_dir).unwrap();
+    let lib_file = src_dir.join("lib.rs");
+    let mut lib_file = std::fs::File::create_new(&lib_file).unwrap();
+    lib_file.write_all(b"pub fn test() {}").unwrap();
+    lib_file.flush().unwrap();
+  }
+
+  #[test]
+  #[serial]
+  #[traced_test]
+  fn modify_workspace_manifest() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+
+    let initial_crate_manifest = r#"
+      [package]
+      name = "test"
+
+      [dependencies]
+      a = { workspace = true }
+      b = { workspace = true }
+    "#;
+
+    let initial_workspace_manifest = r#"
+      [workspace]
+      resolver = "2"
+      members = ["test"]
+
+      [workspace.dependencies]
+      a = { package = "a", version = "0.1" }
+      b = { package = "b", version = "0.1" }
+    "#;
+
+    let updated_workspace_manifest = r#"
+      [workspace]
+      resolver = "2"
+      members = ["test"]
+
+      [workspace.dependencies]
+      a = { package = "b", version = "0.1" }
+      b = { package = "a", version = "0.1" }
+    "#;
+
+    let crate_dir = tmp_dir.path().join("test");
+    std::fs::create_dir(&crate_dir).unwrap();
+
+    create_src_lib(tmp_dir.path());
+    create_src_lib(&crate_dir);
+
+    let crate_manifest_path = crate_dir.as_path().join("Cargo.toml");
+    let workspace_manifest_path = tmp_dir.path().join("Cargo.toml");
+    let mut crate_manifest_file = std::fs::File::create_new(&crate_manifest_path).unwrap();
+    crate_manifest_file
+      .write_all(initial_crate_manifest.as_bytes())
+      .unwrap();
+    crate_manifest_file.flush().unwrap();
+    let mut workspace_manifest_file = std::fs::File::create_new(&workspace_manifest_path).unwrap();
+    workspace_manifest_file
+      .write_all(initial_workspace_manifest.as_bytes())
+      .unwrap();
+    workspace_manifest_file.flush().unwrap();
+    // set env var
+    #[expect(unsafe_code)]
+    // SAFETY: The test is marked as serial, so it is safe to set the environment variable.
+    unsafe {
+      std::env::set_var("CARGO_MANIFEST_DIR", crate_manifest_path.parent().unwrap());
+    };
+    let initial_mtime = CargoManifest::get_cargo_manifest_mtime(&crate_manifest_path).unwrap();
+
+    let cargo_manifest = CargoManifest::shared();
+
+    // resolve the path for the initial workspace manifest
+    let crate_to_resolve = "a";
+    let expected_path = "::a".to_string();
+    assert_eq!(
+      pretty_format_syn_path(
+        cargo_manifest
+          .try_resolve_crate_path(crate_to_resolve, &[])
+          .as_ref()
+          .unwrap()
+      ),
+      expected_path
+    );
+
+    // update the workspace manifest
+    workspace_manifest_file
+      .seek(std::io::SeekFrom::Start(0))
+      .unwrap();
+    workspace_manifest_file
+      .write_all(updated_workspace_manifest.as_bytes())
+      .unwrap();
+    // update the mtime
+    workspace_manifest_file
+      .set_modified(std::time::SystemTime::now())
+      .unwrap();
+    workspace_manifest_file.flush().unwrap();
+    let new_mtime = CargoManifest::get_cargo_manifest_mtime(&workspace_manifest_path).unwrap();
+    drop(cargo_manifest);
+    let cargo_manifest = CargoManifest::shared();
+
+    // check that the mtime has changed
+    assert_ne!(initial_mtime, new_mtime);
+
+    // resolve the path for the updated workspace manifest
+    let expected_path = "::b".to_string();
+    assert_eq!(
+      pretty_format_syn_path(
+        cargo_manifest
+          .try_resolve_crate_path(crate_to_resolve, &[])
+          .as_ref()
+          .unwrap()
+      ),
+      expected_path
+    );
+    drop(cargo_manifest);
   }
 }

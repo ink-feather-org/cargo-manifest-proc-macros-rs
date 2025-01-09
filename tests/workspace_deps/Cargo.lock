@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-manifest-proc-macros"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "syn",
  "thiserror",
