@@ -8,7 +8,7 @@ fn workspace_deps_working() {
 
   assert!(
     Command::new("cargo")
-      .arg("build")
+      .arg("test")
       .arg("--all")
       .arg(format!("--manifest-path={}", manifest_dir.display()))
       .spawn()

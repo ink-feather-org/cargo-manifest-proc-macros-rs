@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-manifest-proc-macros"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "syn",
  "thiserror",
@@ -101,7 +101,16 @@ checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
 name = "my-cool-dep-real-name"
 version = "0.1.0"
 dependencies = [
+ "my-cool-dep-real-name-macros",
+]
+
+[[package]]
+name = "my-cool-dep-real-name-macros"
+version = "0.1.0"
+dependencies = [
  "cargo-manifest-proc-macros",
+ "quote",
+ "syn",
  "tracing-proc-macros-ink",
 ]
 
@@ -263,7 +272,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "test-crate"
+name = "test-crate-real-name-dep"
+version = "0.1.0"
+dependencies = [
+ "my-cool-dep-real-name",
+]
+
+[[package]]
+name = "test-crate-renamed-dep"
 version = "0.1.0"
 dependencies = [
  "my-cool-dep-real-name",

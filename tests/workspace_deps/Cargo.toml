@@ -3,14 +3,18 @@ name = "test-workspace-root-crate"
 version = "0.1.0"
 edition = "2024"
 
+[dependencies]
+my-cool-dep-renamed = { workspace = true }
+
 [workspace]
-members = ["my-cool-dep", "test-crate"]
+members = [
+  "my-cool-dep-real-name",
+  "my-cool-dep-real-name-macros",
+  "test-crate-real-name-dep",
+  "test-crate-renamed-dep",
+]
 resolver = "2"
 
-
 [workspace.dependencies]
-my-cool-dep = { package = "my-cool-dep-real-name", path = "my-cool-dep" }
+my-cool-dep-renamed = { package = "my-cool-dep-real-name", path = "my-cool-dep-real-name" }
 cargo-manifest-proc-macros = { path = "../.." }
-
-[dependencies]
-my-cool-dep = { workspace = true }
