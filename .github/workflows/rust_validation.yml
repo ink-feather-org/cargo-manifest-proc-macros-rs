@@ -54,5 +54,7 @@ jobs:
         run: cargo build --verbose --all-features --all-targets
       - name: Run tests
         run: cargo test --verbose --lib --examples
+      - name: Run tests no default features
+        run: cargo test --verbose --lib --examples --no-default-features
       - name: Run tests --all-features
         run: cargo test --verbose --all-features --lib --examples
