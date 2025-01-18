@@ -474,10 +474,12 @@ impl CargoManifest {
         let re_exported_crate_path = known_re_exporting_crate
           .crate_re_exporting_policy
           .get_re_exported_crate_path(query_crate_name);
+        #[allow(if_let_rescope)]
         if let Some(re_exported_crate_path) = re_exported_crate_path {
           trace!(
             "Found re-exporting crate: {} -> {}",
-            known_re_exporting_crate.re_exporting_crate_package_name, query_crate_name
+            known_re_exporting_crate.re_exporting_crate_package_name,
+            query_crate_name
           );
           let mut path = crate_name_to_syn_path(indirect_mapped_exporting_crate_name);
           path.segments.extend(re_exported_crate_path);

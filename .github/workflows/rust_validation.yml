@@ -34,27 +34,5 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Install latest nightly
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly
-          components: rustc, cargo, rustfmt, rust-std, clippy, rust-src, rust-analysis
-
-      - name: Check format
-        run: cargo fmt --all --check
-      - name: Clippy only default features
-        run: cargo clippy --workspace --all-targets
-      - name: Clippy all features
-        run: cargo clippy --workspace --all-features --all-targets
-      - name: Build
-        run: cargo build --verbose
-      - name: Build --no-default-features
-        run: cargo build --verbose --no-default-features
-      - name: Build --all-features
-        run: cargo build --verbose --all-features --all-targets
-      - name: Run tests
-        run: cargo test --verbose
-      - name: Run tests no default features
-        run: cargo test --verbose --no-default-features
-      - name: Run tests --all-features
-        run: cargo test --verbose --all-features
+      - name: Run the ./tools/ci.sh script
+        run: ./tools/ci.sh

@@ -79,14 +79,15 @@ strip = "debuginfo"
 
 [package]
 name = "cargo-manifest-proc-macros"
-version = "0.3.1"
-edition = "2024"
+version = "0.3.2"
+edition = "2021"                                                                # once we reach 1.85.0 in msrv, we can bump this to 2024
 license = "MIT OR Apache-2.0"
 description = "Find the syn::Path to your own crate from proc-macros reliably."
 homepage = "https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs"
 repository = "https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs"
 categories = ["development-tools::procedural-macro-helpers"]
 keywords = ["proc-macro"]
+rust-version = "1.83.0"                                                         # this tracks bevy's minimum supported version
 
 [features]
 default = ["proc-macro"]
