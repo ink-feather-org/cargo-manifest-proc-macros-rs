@@ -13,12 +13,12 @@ use tracing::{info, trace};
 
 use crate::syn_utils::{crate_name_to_syn_path, pretty_format_syn_path};
 
-fn get_env_var(name: &str) -> String {
+fn get_env_var(name: &str) -> Option<String> {
   #[cfg(not(all(feature = "nightly", feature = "proc-macro")))]
   let env_var = std::env::var(name);
   #[cfg(all(feature = "nightly", feature = "proc-macro"))]
   let env_var = proc_macro::tracked_env::var(name);
-  env_var.unwrap_or_else(|_| panic!("The environment variable {name} must be set!"))
+  env_var.ok()
 }
 
 fn track_path(path: impl AsRef<str>) {
@@ -249,8 +249,20 @@ impl CargoManifest {
     // The environment variable `CARGO_MANIFEST_PATH` is not consistently set in all environments.
 
     // Access environment variables through the `tracked_env` module to ensure that the proc-macro is re-run when the environment variables change.
-    let mut cargo_manifest_path = PathBuf::from(get_env_var("CARGO_MANIFEST_DIR"));
-    cargo_manifest_path.push("Cargo.toml");
+    let cargo_manifest_path_env_var = get_env_var("CARGO_MANIFEST_PATH");
+    let cargo_manifest_path = cargo_manifest_path_env_var.map_or_else(
+      || {
+        // If the `CARGO_MANIFEST_PATH` environment variable is not set, we fall
+        // back to the `CARGO_MANIFEST_DIR` environment variable.
+        let cargo_manifest_dir = get_env_var("CARGO_MANIFEST_DIR").unwrap_or_else(|| {
+          panic!("The environment variable CARGO_MANIFEST_DIR must be set!");
+        });
+        let mut cargo_manifest_path = PathBuf::from(cargo_manifest_dir);
+        cargo_manifest_path.push("Cargo.toml");
+        cargo_manifest_path
+      },
+      PathBuf::from,
+    );
     assert!(
       cargo_manifest_path.exists(),
       "Cargo.toml does not exist at \"{}\"!",
@@ -505,12 +517,14 @@ impl CargoManifest {
   /// https://github.com/bkchr/proc-macro-crate/blob/a5939f3fbf94279b45902119d97f881fefca6a0d/src/lib.rs#L243
   #[must_use]
   fn resolve_workspace_manifest_path(cargo_manifest_path: &Path) -> PathBuf {
-    let cmd_result = Command::new(get_env_var("CARGO"))
-      .arg("locate-project")
-      .args(["--workspace", "--message-format=plain"])
-      .arg(format!("--manifest-path={}", cargo_manifest_path.display()))
-      .output()
-      .expect("Failed to run `cargo locate-project`!");
+    let cmd_result = Command::new(
+      get_env_var("CARGO").unwrap_or_else(|| panic!("The environment variable CARGO must be set!")),
+    )
+    .arg("locate-project")
+    .args(["--workspace", "--message-format=plain"])
+    .arg(format!("--manifest-path={}", cargo_manifest_path.display()))
+    .output()
+    .expect("Failed to run `cargo locate-project`!");
     let stdout = cmd_result.stdout;
     let stderr = cmd_result.stderr;
 
@@ -1096,6 +1110,7 @@ mod fs_tests {
     #[expect(unsafe_code)]
     // SAFETY: The test is marked as serial, so it is safe to set the environment variable.
     unsafe {
+      std::env::remove_var("CARGO_MANIFEST_PATH");
       std::env::set_var("CARGO_MANIFEST_DIR", crate_manifest_path.parent().unwrap());
     };
     let initial_mtime = CargoManifest::get_cargo_manifest_mtime(&crate_manifest_path).unwrap();
@@ -1214,6 +1229,7 @@ mod fs_tests {
     #[expect(unsafe_code)]
     // SAFETY: The test is marked as serial, so it is safe to set the environment variable.
     unsafe {
+      std::env::remove_var("CARGO_MANIFEST_PATH");
       std::env::set_var("CARGO_MANIFEST_DIR", crate_manifest_path.parent().unwrap());
     };
     let initial_mtime = CargoManifest::get_cargo_manifest_mtime(&crate_manifest_path).unwrap();
