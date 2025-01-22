@@ -1,11 +1,18 @@
 #!/bin/bash
 set -euo pipefail
 
+export RUSTFLAGS="--deny warnings"
+export RUSTDOCFLAGS="--deny warnings"
+
 # Function to install and set Rust toolchain
 setup_toolchain() {
   local toolchain=$1
   echo "Installing and setting up Rust toolchain: $toolchain"
-  rustup install "$toolchain" || true
+  local components="rustc,cargo,rustfmt,rust-std,clippy"
+  if [[ "$toolchain" == "nightly" ]]; then
+    components="$components,miri"
+  fi
+  rustup toolchain install "$toolchain" --component "$components"
   rustup override set "$toolchain"
 }
 

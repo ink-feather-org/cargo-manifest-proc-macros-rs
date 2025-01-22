@@ -19,8 +19,6 @@ env:
   CARGO_NET_RETRY: 10
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: --deny warnings
-  RUSTDOCFLAGS: --deny warnings
   RUSTUP_MAX_RETRIES: 10
 
 defaults:
