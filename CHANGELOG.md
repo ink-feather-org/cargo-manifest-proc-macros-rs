@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2025-02-11
+
+* Fix false positives in the crate path ambiguity detection.
+* Add more tests.
+* Update dependencies.
+
 ## [0.3.3] - 2025-01-19
 
 * Add support for single file rust scripts that use `CARGO_MANIFEST_PATH`.
@@ -47,7 +53,8 @@ Support reactive compilation using `proc_macro_tracked_env` and `track_path` nig
 
 Initial release.
 
-[Unreleased]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.0...v0.3.1
