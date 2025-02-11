@@ -749,6 +749,35 @@ mod tests {
   }
 
   #[test]
+  fn direct_dev_and_normal_dependency() {
+    let crate_manifest = r#"
+      [package]
+      name = "test"
+
+      [dependencies]
+      test_dep = "0.1"
+
+      [dev-dependencies]
+      test_dep = "0.1"
+    "#;
+    let workspace_manifest = None;
+    let crate_to_resolve = "test_dep";
+    let expected_path = "::test_dep".to_string();
+
+    let cargo_manifest = create_test_cargo_manifest(crate_manifest, workspace_manifest);
+
+    assert_eq!(
+      pretty_format_syn_path(
+        cargo_manifest
+          .try_resolve_crate_path(crate_to_resolve, &[])
+          .as_ref()
+          .unwrap()
+      ),
+      expected_path
+    );
+  }
+
+  #[test]
   fn ambiguous_dependency() {
     let crate_manifest = r#"
       [package]
