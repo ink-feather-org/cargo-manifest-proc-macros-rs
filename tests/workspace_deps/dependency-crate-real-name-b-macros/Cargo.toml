@@ -1,5 +1,5 @@
 [package]
-name = "my-cool-dep-real-name-macros"
+name = "dependency-crate-real-name-b-macros"
 version = "0.1.0"
 edition = "2021"
 

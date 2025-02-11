@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-my-cool-dep-real-name = { path = "../my-cool-dep-real-name" }
+dependency-crate-real-name-a = { path = "../dependency-crate-real-name-a" }

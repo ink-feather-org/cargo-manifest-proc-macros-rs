@@ -1,0 +1,12 @@
+[package]
+name = "dependency-crate-real-name-a-macros"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+cargo-manifest-proc-macros = { workspace = true }
+quote = "1.0"
+syn = "2.0"

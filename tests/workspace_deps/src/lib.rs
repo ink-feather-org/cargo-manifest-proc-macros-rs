@@ -1,7 +1,9 @@
-// workspace package
+//! workspace package
 
 #[test]
 pub fn test_macro_expansion() {
-  let resolved_name = ::my_cool_dep_renamed::resolved_name!();
-  assert_eq!("::my_cool_dep_renamed", resolved_name);
+  let resolved_name = ::dependency_crate_renamed_a::resolved_name!();
+  assert_eq!("::dependency_crate_renamed_a", resolved_name);
+  let resolved_name = ::dependency_crate_renamed_b::resolved_name!();
+  assert_eq!("::dependency_crate_renamed_b", resolved_name);
 }

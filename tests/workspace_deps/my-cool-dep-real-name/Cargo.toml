@@ -1,7 +1,0 @@
-[package]
-name = "my-cool-dep-real-name"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-my-cool-dep-real-name-macros = { path = "../my-cool-dep-real-name-macros" }

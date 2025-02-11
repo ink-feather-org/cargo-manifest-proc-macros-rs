@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-my-cool-dep-renamed = { workspace = true }
+dependency-crate-renamed-a = { workspace = true }

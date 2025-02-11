@@ -4,17 +4,21 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-my-cool-dep-renamed = { workspace = true }
+dependency-crate-renamed-a = { workspace = true }
+dependency-crate-renamed-b = { workspace = true }
 
 [workspace]
 members = [
-  "my-cool-dep-real-name",
-  "my-cool-dep-real-name-macros",
+  "dependency-crate-real-name-a",
+  "dependency-crate-real-name-a-macros",
+  "dependency-crate-real-name-b",
+  "dependency-crate-real-name-b-macros",
   "test-crate-real-name-dep",
   "test-crate-renamed-dep",
 ]
 resolver = "2"
 
 [workspace.dependencies]
-my-cool-dep-renamed = { package = "my-cool-dep-real-name", path = "my-cool-dep-real-name" }
+dependency-crate-renamed-a = { package = "dependency-crate-real-name-a", path = "dependency-crate-real-name-a" }
+dependency-crate-renamed-b = { package = "dependency-crate-real-name-b", path = "dependency-crate-real-name-b" }
 cargo-manifest-proc-macros = { path = "../.." }

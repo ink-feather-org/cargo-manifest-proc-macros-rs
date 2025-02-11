@@ -1,0 +1,7 @@
+[package]
+name = "dependency-crate-real-name-b"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dependency-crate-real-name-b-macros = { path = "../dependency-crate-real-name-b-macros" }
