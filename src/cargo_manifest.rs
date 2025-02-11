@@ -372,13 +372,19 @@ impl CargoManifest {
           .unwrap_or(dependency_key)
       };
 
-      // Attempt to insert the package name to renamed dependency name mapping.
-      if resolved_dependencies.contains_key(crate_package_name) {
-        resolved_dependencies.insert(
-          crate_package_name.to_string(),
-          DependencyState::Ambiguous(crate_package_name.to_string()),
-        );
+      // Attempt to insert a mapping from the package name the to renamed dependency name.
+      if let Some(DependencyState::Resolved(previously_resolved)) =
+        resolved_dependencies.get(crate_package_name)
+      {
+        if previously_resolved != dependency_key {
+          // If the dependency previously mapped to a different crate, we mark it as ambiguous.
+          resolved_dependencies.insert(
+            crate_package_name.to_string(),
+            DependencyState::Ambiguous(crate_package_name.to_string()),
+          );
+        }
       } else {
+        // The dependency has never been resolved yet, so we insert it.
         resolved_dependencies.insert(
           crate_package_name.to_string(),
           DependencyState::Resolved(dependency_key.to_string()),
