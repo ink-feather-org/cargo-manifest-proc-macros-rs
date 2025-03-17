@@ -217,22 +217,20 @@ impl CargoManifest {
         // The mtime of the crate manifest has changed.
         // We need to recompute the CargoManifest.
 
-        let cargo_manifest = Box::leak(Box::new(RwLock::new(Self::new_with_current_env_vars(
+        let cargo_manifest = Self::new_with_current_env_vars(
           &current_cargo_manifest_path,
           current_cargo_manifest_mtime,
-        ))));
+        );
 
         // Overwrite the cache with the new cargo manifest version.
-        MANIFESTS
-          .write()
-          .insert(current_cargo_manifest_path, cargo_manifest);
-
-        return cargo_manifest.read();
+        *existing_shared_instance_rw_lock.write() = cargo_manifest;
       }
 
       return existing_shared_instance_rw_lock.read();
     }
 
+    // TODO: check if we can write uncontested if not wait for write
+    //       Only leak on uncontested write
     let mut manifests_guard_w = MANIFESTS.write();
 
     // A new Cargo.toml has been requested, so we have to leak a new CargoManifest instance.
