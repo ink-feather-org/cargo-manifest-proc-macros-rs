@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-03-17
+
+* Use `ImDocument` instead of `DocumentMut` because editing toml files is not necessary.
+* Switch to using `parking_lot::RwLock` to improve concurrent access.
+
 ## [0.3.4] - 2025-02-11
 
 * Fix false positives in the crate path ambiguity detection.
@@ -54,6 +59,7 @@ Support reactive compilation using `proc_macro_tracked_env` and `track_path` nig
 Initial release.
 
 [Unreleased]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.4...HEAD
+[0.4.0]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.1...v0.3.2
