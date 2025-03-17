@@ -2,13 +2,13 @@
 // Based on: https://github.com/bevyengine/bevy/blob/main/crates/bevy_macro_utils/src/bevy_manifest.rs
 
 use alloc::collections::BTreeMap;
+use parking_lot::{RwLock, RwLockReadGuard};
 use std::{
   path::{Path, PathBuf},
   process::Command,
-  sync::{Mutex, MutexGuard},
 };
 use thiserror::Error;
-use toml_edit::{DocumentMut, Item, Table};
+use toml_edit::{ImDocument, Item, Table};
 use tracing::{info, trace};
 
 use crate::syn_utils::{crate_name_to_syn_path, pretty_format_syn_path};
@@ -175,10 +175,9 @@ pub struct CargoManifest {
 impl CargoManifest {
   /// Returns a global shared instance of the [`CargoManifest`] struct.
   #[must_use = "This method returns the shared instance of the CargoManifest."]
-  #[expect(clippy::mut_mutex_lock)]
-  pub fn shared() -> MutexGuard<'static, Self> {
-    static MANIFESTS: Mutex<BTreeMap<PathBuf, &'static Mutex<CargoManifest>>> =
-      Mutex::new(BTreeMap::new());
+  pub fn shared() -> RwLockReadGuard<'static, Self> {
+    static MANIFESTS: RwLock<BTreeMap<PathBuf, &'static RwLock<CargoManifest>>> =
+      RwLock::new(BTreeMap::new());
 
     // Get the current cargo manifest path and its modified time.
     // Rust-Analyzer keeps the proc macro server running between invocations and only the environment variables change.
@@ -187,61 +186,68 @@ impl CargoManifest {
     let current_cargo_manifest_mtime = Self::get_cargo_manifest_mtime(&current_cargo_manifest_path)
       .expect("The mtime of the crate manifest should be present!");
 
-    let mut manifests = MANIFESTS.lock().unwrap();
+    let existing_shared_instance_rw_lock =
+      MANIFESTS.read().get(&current_cargo_manifest_path).copied();
 
     // Get the cached shared instance of the CargoManifest.
-    let existing_shared_instance =
-      manifests
-        .get(&current_cargo_manifest_path)
-        .map(|cargo_manifest_mutex| {
-          let mut shared_instance = cargo_manifest_mutex.lock().unwrap();
+    if let Some(existing_shared_instance_rw_lock) = existing_shared_instance_rw_lock {
+      let existing_shared_instance_guard = existing_shared_instance_rw_lock.read();
 
-          // Check if the mtime of the crate manifest has changed.
-          let mut a_relevant_cargo_toml_changed =
-            shared_instance.user_crate_manifest_mtime != current_cargo_manifest_mtime;
+      // Check if the mtime of the crate manifest has changed.
+      let mut a_relevant_cargo_toml_changed =
+        existing_shared_instance_guard.user_crate_manifest_mtime != current_cargo_manifest_mtime;
 
-          // Check if the mtime of the workspace manifest has changed.
-          if shared_instance.workspace_manifest_mtime.is_some() {
-            let workspace_cargo_toml_path =
-              Self::resolve_workspace_manifest_path(&current_cargo_manifest_path);
-            let workspace_cargo_toml_mtime =
-              Self::get_cargo_manifest_mtime(&workspace_cargo_toml_path);
+      // Check if the mtime of the workspace manifest has changed.
+      if existing_shared_instance_guard
+        .workspace_manifest_mtime
+        .is_some()
+      {
+        let workspace_cargo_toml_path =
+          Self::resolve_workspace_manifest_path(&current_cargo_manifest_path);
+        let workspace_cargo_toml_mtime = Self::get_cargo_manifest_mtime(&workspace_cargo_toml_path);
 
-            a_relevant_cargo_toml_changed |=
-              shared_instance.workspace_manifest_mtime != workspace_cargo_toml_mtime.ok();
-          }
+        a_relevant_cargo_toml_changed |= existing_shared_instance_guard.workspace_manifest_mtime
+          != workspace_cargo_toml_mtime.ok();
+      }
 
-          // We do this to avoid leaking a new CargoManifest instance, when a Cargo.toml we had already parsed previously is changed.
-          if a_relevant_cargo_toml_changed {
-            // The mtime of the crate manifest has changed.
-            // We need to recompute the CargoManifest.
+      drop(existing_shared_instance_guard);
 
-            let cargo_manifest = Self::new_with_current_env_vars(
-              &current_cargo_manifest_path,
-              current_cargo_manifest_mtime,
-            );
+      // We do this to avoid leaking a new CargoManifest instance, when a Cargo.toml we had already parsed previously is changed.
+      if a_relevant_cargo_toml_changed {
+        // The mtime of the crate manifest has changed.
+        // We need to recompute the CargoManifest.
 
-            // Overwrite the cache with the new cargo manifest version.
-            *shared_instance = cargo_manifest;
-          }
+        let cargo_manifest = Box::leak(Box::new(RwLock::new(Self::new_with_current_env_vars(
+          &current_cargo_manifest_path,
+          current_cargo_manifest_mtime,
+        ))));
 
-          shared_instance
-        });
+        // Overwrite the cache with the new cargo manifest version.
+        MANIFESTS
+          .write()
+          .insert(current_cargo_manifest_path, cargo_manifest);
 
-    let shared_instance = existing_shared_instance.unwrap_or_else(move || {
-      // A new Cargo.toml has been requested, so we have to leak a new CargoManifest instance.
-      let new_shared_instance = Box::leak(Box::new(Mutex::new(Self::new_with_current_env_vars(
-        &current_cargo_manifest_path,
-        current_cargo_manifest_mtime,
-      ))));
+        return cargo_manifest.read();
+      }
 
-      // Overwrite the cache with the new cargo manifest version.
-      manifests.insert(current_cargo_manifest_path, new_shared_instance);
+      return existing_shared_instance_rw_lock.read();
+    }
 
-      new_shared_instance.lock().unwrap()
-    });
+    let mut manifests_guard_w = MANIFESTS.write();
 
-    shared_instance
+    // A new Cargo.toml has been requested, so we have to leak a new CargoManifest instance.
+    let new_shared_instance = Box::leak(Box::new(RwLock::new(Self::new_with_current_env_vars(
+      &current_cargo_manifest_path,
+      current_cargo_manifest_mtime,
+    ))));
+
+    // Overwrite the cache with the new cargo manifest version.
+    manifests_guard_w.insert(current_cargo_manifest_path, new_shared_instance);
+
+    // We have to drop the write guard before we can read the shared instance.
+    drop(manifests_guard_w);
+
+    new_shared_instance.read()
   }
 
   #[must_use]
@@ -396,7 +402,7 @@ impl CargoManifest {
   }
 
   #[must_use]
-  fn parse_cargo_manifest(cargo_manifest_path: &Path) -> DocumentMut {
+  fn parse_cargo_manifest(cargo_manifest_path: &Path) -> ImDocument<String> {
     // Track the path to ensure that the proc-macro is re-run when the `Cargo.toml` changes.
     track_path(cargo_manifest_path.to_string_lossy());
     let cargo_manifest_string =
@@ -408,7 +414,7 @@ impl CargoManifest {
       });
 
     cargo_manifest_string
-      .parse::<DocumentMut>()
+      .parse::<ImDocument<String>>()
       .unwrap_or_else(|err| {
         panic!(
           "Failed to parse cargo manifest: {} - {err}",
@@ -567,7 +573,7 @@ impl CargoManifest {
   }
 
   #[must_use]
-  fn load_workspace_cargo_toml(workspace_cargo_toml_path: &Path) -> DocumentMut {
+  fn load_workspace_cargo_toml(workspace_cargo_toml_path: &Path) -> ImDocument<String> {
     let workspace_cargo_toml_string = std::fs::read_to_string(workspace_cargo_toml_path)
       .unwrap_or_else(|err| {
         panic!(
@@ -577,7 +583,7 @@ impl CargoManifest {
       });
 
     let workspace_cargo_toml = workspace_cargo_toml_string
-      .parse::<DocumentMut>()
+      .parse::<ImDocument<String>>()
       .unwrap_or_else(|err| {
         panic!(
           "Failed to parse workspace cargo manifest: {} - {err}",
@@ -644,10 +650,10 @@ mod tests {
     workspace_manifest: Option<&str>,
   ) -> CargoManifest {
     let crate_manifest_toml = crate_manifest
-      .parse::<DocumentMut>()
+      .parse::<ImDocument<String>>()
       .expect("Failed to parse test manifest");
     let workspace_manifest_toml = workspace_manifest.map(|s| {
-      s.parse::<DocumentMut>()
+      s.parse::<ImDocument<String>>()
         .expect("Failed to parse workspace manifest")
     });
     let workspace_dependency_map =
