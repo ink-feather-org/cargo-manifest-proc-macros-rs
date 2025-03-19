@@ -229,9 +229,14 @@ impl CargoManifest {
       return existing_shared_instance_rw_lock.read();
     }
 
-    // TODO: check if we can write uncontested if not wait for write
-    //       Only leak on uncontested write
     let mut manifests_guard_w = MANIFESTS.write();
+
+    // While we were waiting for write access another thread may have already create the new CargoManifest for us
+    if let Some(existing_shared_instance_rw_lock) =
+      manifests_guard_w.get(&current_cargo_manifest_path)
+    {
+      return existing_shared_instance_rw_lock.read();
+    }
 
     // A new Cargo.toml has been requested, so we have to leak a new CargoManifest instance.
     let new_shared_instance = Box::leak(Box::new(RwLock::new(Self::new_with_current_env_vars(
@@ -1183,13 +1188,26 @@ mod fs_tests {
     crate_manifest_file.flush().unwrap();
     let new_mtime = CargoManifest::get_cargo_manifest_mtime(&crate_manifest_path).unwrap();
     drop(cargo_manifest);
-    let cargo_manifest = CargoManifest::shared();
 
+    let cargo_manifest = CargoManifest::shared();
     // check that the mtime has changed
     assert_ne!(initial_mtime, new_mtime);
 
     // resolve the path for the updated crate manifest
     let expected_path = "::test_dep_renamed".to_string();
+    assert_eq!(
+      pretty_format_syn_path(
+        cargo_manifest
+          .try_resolve_crate_path(crate_to_resolve, &[])
+          .as_ref()
+          .unwrap()
+      ),
+      expected_path
+    );
+    drop(cargo_manifest);
+
+    // check it again
+    let cargo_manifest = CargoManifest::shared();
     assert_eq!(
       pretty_format_syn_path(
         cargo_manifest
@@ -1309,6 +1327,19 @@ mod fs_tests {
 
     // resolve the path for the updated workspace manifest
     let expected_path = "::b".to_string();
+    assert_eq!(
+      pretty_format_syn_path(
+        cargo_manifest
+          .try_resolve_crate_path(crate_to_resolve, &[])
+          .as_ref()
+          .unwrap()
+      ),
+      expected_path
+    );
+    drop(cargo_manifest);
+
+    // check it again
+    let cargo_manifest = CargoManifest::shared();
     assert_eq!(
       pretty_format_syn_path(
         cargo_manifest
