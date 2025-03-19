@@ -1420,7 +1420,22 @@ mod bench {
     possible_crate_names
   }
 
-  const LOOKUP_COUNT: usize = 100_000;
+  #[bench]
+  fn single_item_lookup(bench: &mut Bencher) {
+    let _guard = SERIAL_TEST.lock();
+    let tmp_dir = tempfile::tempdir().unwrap();
+
+    let possible_crate_names = setup_bench(&tmp_dir);
+    let mut rng = rand::rng();
+
+    bench.iter(|| {
+      let possible_crate_name = possible_crate_names.choose(&mut rng).unwrap();
+      let _ =
+        black_box(super::CargoManifest::shared().try_resolve_crate_path(possible_crate_name, &[]));
+    });
+  }
+
+  const LOOKUP_COUNT: usize = 100;
 
   #[bench]
   fn single_threaded_random_lookups(bench: &mut Bencher) {
@@ -1431,10 +1446,11 @@ mod bench {
     let mut rng = rand::rng();
 
     bench.iter(|| {
-      let cargo_manifest = super::CargoManifest::shared();
       for _ in 0..LOOKUP_COUNT {
         let possible_crate_name = possible_crate_names.choose(&mut rng).unwrap();
-        let _ = black_box(cargo_manifest.try_resolve_crate_path(possible_crate_name, &[]));
+        let _ = black_box(
+          super::CargoManifest::shared().try_resolve_crate_path(possible_crate_name, &[]),
+        );
       }
     });
   }
@@ -1447,12 +1463,12 @@ mod bench {
     let possible_crate_names = setup_bench(&tmp_dir);
 
     bench.iter(|| {
-      let cargo_manifest = super::CargoManifest::shared();
-
       (0..LOOKUP_COUNT).par_bridge().for_each(|_| {
         let mut rng = rand::rng();
         let possible_crate_name = possible_crate_names.choose(&mut rng).unwrap();
-        let _ = black_box(cargo_manifest.try_resolve_crate_path(possible_crate_name, &[]));
+        let _ = black_box(
+          super::CargoManifest::shared().try_resolve_crate_path(possible_crate_name, &[]),
+        );
       });
     });
   }
