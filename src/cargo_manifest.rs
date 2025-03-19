@@ -6,10 +6,11 @@ use parking_lot::{RwLock, RwLockReadGuard};
 use std::{
   path::{Path, PathBuf},
   process::Command,
+  sync::LazyLock,
 };
 use thiserror::Error;
 use toml_edit::{ImDocument, Item, Table};
-use tracing::{info, trace};
+use tracing::{error, info, trace};
 
 use crate::syn_utils::{crate_name_to_syn_path, pretty_format_syn_path};
 
@@ -292,7 +293,7 @@ impl CargoManifest {
     cargo_manifest_path: &Path,
     user_crate_manifest_mtime: std::time::SystemTime,
   ) -> Self {
-    let crate_manifest = Self::parse_cargo_manifest(cargo_manifest_path);
+    let crate_manifest = Self::parse_cargo_manifest_from_fs(cargo_manifest_path);
 
     // Extract the user crate package name.
     let user_crate_name = Self::extract_user_crate_name(crate_manifest.as_table());
@@ -405,7 +406,7 @@ impl CargoManifest {
   }
 
   #[must_use]
-  fn parse_cargo_manifest(cargo_manifest_path: &Path) -> ImDocument<String> {
+  fn parse_cargo_manifest_from_fs(cargo_manifest_path: &Path) -> ImDocument<String> {
     // Track the path to ensure that the proc-macro is re-run when the `Cargo.toml` changes.
     track_path(cargo_manifest_path.to_string_lossy());
     let cargo_manifest_string =
@@ -416,14 +417,63 @@ impl CargoManifest {
         )
       });
 
-    cargo_manifest_string
+    Self::parse_cargo_manifest_quick(&cargo_manifest_string)
+  }
+
+  #[must_use]
+  fn parse_cargo_manifest_quick(manifest_str: &str) -> ImDocument<String> {
+    // Parsing is too slow so we first extract the sections we care about into a new string.
+
+    return manifest_str
       .parse::<ImDocument<String>>()
-      .unwrap_or_else(|err| {
-        panic!(
-          "Failed to parse cargo manifest: {} - {err}",
-          cargo_manifest_path.display()
-        )
-      })
+      .unwrap_or_else(|err| panic!("Failed to parse cargo manifest: {err}"));
+
+    error!("STRIPPING MANIFEST:\n{}", manifest_str);
+
+    static SECTIONS_TO_KEEP: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+      let mut things_to_keep = vec![
+        "[workspace.dependencies",
+        "[workspace.dev-dependencies",
+        "[workspace.build-dependencies",
+        "[dependencies",
+        "[dev-dependencies",
+        "[build-dependencies",
+        "[package",
+      ];
+      things_to_keep.sort();
+      things_to_keep
+    });
+
+    let mut new_manifest_str = String::new();
+    let mut iter = manifest_str.lines();
+    let mut is_in_section = false;
+
+    while let Some(line) = iter.next() {
+      let line = line.trim_start();
+      if line.starts_with('[') {
+        error!("SECSTART: {}", line);
+        // select until ] or " " or \t or EOL
+        let section = line.trim_end_matches(|c| c == ']' || c == ' ' || c == '\t');
+        error!("SEC: {}", section);
+        // TODO: multiline strings
+        if SECTIONS_TO_KEEP.binary_search(&section).is_ok() {
+          is_in_section = true;
+          new_manifest_str.push_str(line);
+          new_manifest_str.push('\n');
+        } else {
+          is_in_section = false;
+        }
+      } else if is_in_section {
+        new_manifest_str.push_str(line);
+        new_manifest_str.push('\n');
+      }
+    }
+
+    error!("MANI:\n{}", new_manifest_str);
+
+    new_manifest_str
+      .parse::<ImDocument<String>>()
+      .unwrap_or_else(|err| panic!("Failed to parse cargo manifest: {err}"))
   }
 
   /// Gets the absolute module path for a crate from a supplied dependencies section.
@@ -1180,6 +1230,7 @@ mod fs_tests {
   }
 
   #[test]
+  #[traced_test]
   fn modify_crate_manifest() {
     let _guard = SERIAL_TEST.lock();
     let tmp_dir = tempfile::tempdir().unwrap();
@@ -1451,6 +1502,9 @@ mod bench {
         let _ = black_box(
           super::CargoManifest::shared().try_resolve_crate_path(possible_crate_name, &[]),
         );
+        let _ = black_box(
+          super::CargoManifest::shared().try_resolve_crate_path(possible_crate_name, &[]),
+        );
       }
     });
   }
@@ -1466,6 +1520,9 @@ mod bench {
       (0..LOOKUP_COUNT).par_bridge().for_each(|_| {
         let mut rng = rand::rng();
         let possible_crate_name = possible_crate_names.choose(&mut rng).unwrap();
+        let _ = black_box(
+          super::CargoManifest::shared().try_resolve_crate_path(possible_crate_name, &[]),
+        );
         let _ = black_box(
           super::CargoManifest::shared().try_resolve_crate_path(possible_crate_name, &[]),
         );
