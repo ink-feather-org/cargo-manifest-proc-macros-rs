@@ -647,6 +647,11 @@ impl CargoManifest {
 #[doc(hidden)]
 mod tests {
   use super::*;
+  use parking_lot::Mutex;
+  use std::sync::LazyLock;
+
+  #[allow(dead_code)]
+  pub static SERIAL_TEST: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
   fn create_test_cargo_manifest(
     crate_manifest: &str,
@@ -1117,15 +1122,66 @@ mod tests {
 #[cfg(test)]
 #[doc(hidden)]
 mod fs_tests {
-  use serial_test::serial;
+  use crate::cargo_manifest::tests::SERIAL_TEST;
+  use rand::Rng;
   use std::io::{Seek, Write};
+  use tempfile::TempDir;
   use tracing_test::traced_test;
 
   use super::*;
 
+  pub fn setup_fs_test(
+    temp_dir: &TempDir,
+    workspace_cargo_toml: Option<&str>,
+    cargo_toml: &str,
+  ) -> ((PathBuf, std::fs::File), Option<(PathBuf, std::fs::File)>) {
+    // create a random subdir to use
+    let subdir_name: String = rand::rng()
+      .sample_iter(&rand::distr::Alphanumeric)
+      .take(7)
+      .map(char::from)
+      .collect();
+    let workspace_path = temp_dir.path().join(subdir_name);
+    std::fs::create_dir(&workspace_path).unwrap();
+    let crate_path = workspace_path.join("test-crate");
+    std::fs::create_dir(&crate_path).unwrap();
+
+    let crate_manifest_path = crate_path.join("Cargo.toml");
+    let mut crate_manifest_file = std::fs::File::create_new(&crate_manifest_path).unwrap();
+    crate_manifest_file
+      .write_all(cargo_toml.as_bytes())
+      .unwrap();
+    crate_manifest_file.flush().unwrap();
+    create_src_lib(&crate_path);
+
+    let mut workspace_return = None;
+    let workspace_manifest_path = workspace_path.join("Cargo.toml");
+    if let Some(workspace_cargo_toml) = workspace_cargo_toml {
+      let mut workspace_manifest_file =
+        std::fs::File::create_new(&workspace_manifest_path).unwrap();
+      workspace_manifest_file
+        .write_all(workspace_cargo_toml.as_bytes())
+        .unwrap();
+      workspace_manifest_file.flush().unwrap();
+      create_src_lib(&workspace_path);
+      workspace_return = Some((workspace_manifest_path, workspace_manifest_file));
+    }
+
+    ((crate_manifest_path, crate_manifest_file), workspace_return)
+  }
+
+  pub fn create_src_lib(path: &Path) {
+    let src_dir = path.join("src");
+    std::fs::create_dir(&src_dir).unwrap();
+    let lib_file = src_dir.join("lib.rs");
+    let mut lib_file = std::fs::File::create_new(&lib_file).unwrap();
+    lib_file.write_all(b"pub fn test() {}").unwrap();
+    lib_file.flush().unwrap();
+  }
+
   #[test]
-  #[serial]
   fn modify_crate_manifest() {
+    let _guard = SERIAL_TEST.lock();
     let tmp_dir = tempfile::tempdir().unwrap();
 
     let initial_crate_manifest = r#"
@@ -1144,12 +1200,9 @@ mod fs_tests {
       test_dep_renamed = { package = "test_dep" }
     "#;
 
-    let crate_manifest_path = tmp_dir.path().join("Cargo.toml");
-    let mut crate_manifest_file = std::fs::File::create_new(&crate_manifest_path).unwrap();
-    crate_manifest_file
-      .write_all(initial_crate_manifest.as_bytes())
-      .unwrap();
-    crate_manifest_file.flush().unwrap();
+    let ((crate_manifest_path, mut crate_manifest_file), _) =
+      setup_fs_test(&tmp_dir, None, initial_crate_manifest);
+
     // set env var
     #[expect(unsafe_code)]
     // SAFETY: The test is marked as serial, so it is safe to set the environment variable.
@@ -1220,24 +1273,15 @@ mod fs_tests {
     drop(cargo_manifest);
   }
 
-  fn create_src_lib(path: &Path) {
-    let src_dir = path.join("src");
-    std::fs::create_dir(&src_dir).unwrap();
-    let lib_file = src_dir.join("lib.rs");
-    let mut lib_file = std::fs::File::create_new(&lib_file).unwrap();
-    lib_file.write_all(b"pub fn test() {}").unwrap();
-    lib_file.flush().unwrap();
-  }
-
   #[test]
-  #[serial]
   #[traced_test]
   fn modify_workspace_manifest() {
+    let _guard = SERIAL_TEST.lock();
     let tmp_dir = tempfile::tempdir().unwrap();
 
     let initial_crate_manifest = r#"
       [package]
-      name = "test"
+      name = "test-crate"
 
       [dependencies]
       a = { workspace = true }
@@ -1247,7 +1291,7 @@ mod fs_tests {
     let initial_workspace_manifest = r#"
       [workspace]
       resolver = "2"
-      members = ["test"]
+      members = ["test-crate"]
 
       [workspace.dependencies]
       a = { package = "a", version = "0.1" }
@@ -1257,31 +1301,20 @@ mod fs_tests {
     let updated_workspace_manifest = r#"
       [workspace]
       resolver = "2"
-      members = ["test"]
+      members = ["test-crate"]
 
       [workspace.dependencies]
       a = { package = "b", version = "0.1" }
       b = { package = "a", version = "0.1" }
     "#;
 
-    let crate_dir = tmp_dir.path().join("test");
-    std::fs::create_dir(&crate_dir).unwrap();
+    let ((crate_manifest_path, _), workspace_return) = setup_fs_test(
+      &tmp_dir,
+      Some(initial_workspace_manifest),
+      initial_crate_manifest,
+    );
+    let (workspace_manifest_path, mut workspace_manifest_file) = workspace_return.unwrap();
 
-    create_src_lib(tmp_dir.path());
-    create_src_lib(&crate_dir);
-
-    let crate_manifest_path = crate_dir.as_path().join("Cargo.toml");
-    let workspace_manifest_path = tmp_dir.path().join("Cargo.toml");
-    let mut crate_manifest_file = std::fs::File::create_new(&crate_manifest_path).unwrap();
-    crate_manifest_file
-      .write_all(initial_crate_manifest.as_bytes())
-      .unwrap();
-    crate_manifest_file.flush().unwrap();
-    let mut workspace_manifest_file = std::fs::File::create_new(&workspace_manifest_path).unwrap();
-    workspace_manifest_file
-      .write_all(initial_workspace_manifest.as_bytes())
-      .unwrap();
-    workspace_manifest_file.flush().unwrap();
     // set env var
     #[expect(unsafe_code)]
     // SAFETY: The test is marked as serial, so it is safe to set the environment variable.
@@ -1350,5 +1383,77 @@ mod fs_tests {
       expected_path
     );
     drop(cargo_manifest);
+  }
+}
+
+#[cfg(all(feature = "nightly", not(feature = "proc-macro"), test))]
+#[cfg(test)]
+#[doc(hidden)]
+mod bench {
+  extern crate test;
+  use super::tests::SERIAL_TEST;
+  use rand::prelude::IndexedRandom;
+  use rayon::iter::{ParallelBridge, ParallelIterator};
+  use std::hint::black_box;
+  use test::Bencher;
+
+  fn setup_bench(tmp_dir: &tempfile::TempDir) -> Vec<String> {
+    let cargo_toml = include_str!("../tests/test_data/a_big_cargo.toml");
+    let ((cargo_manifest_path, _), _) = super::fs_tests::setup_fs_test(&tmp_dir, None, cargo_toml);
+
+    // set env var
+    #[expect(unsafe_code)]
+    // SAFETY: The test is marked as serial, so it is safe to set the environment variable.
+    unsafe {
+      std::env::remove_var("CARGO_MANIFEST_PATH");
+      std::env::set_var("CARGO_MANIFEST_DIR", cargo_manifest_path.parent().unwrap());
+    };
+
+    let mut possible_crate_names = Vec::new();
+    {
+      let cargo_manifest = super::CargoManifest::shared();
+      for (crate_name, _) in cargo_manifest.crate_dependencies.iter() {
+        possible_crate_names.push(crate_name.clone());
+      }
+    }
+
+    possible_crate_names
+  }
+
+  const LOOKUP_COUNT: usize = 100_000;
+
+  #[bench]
+  fn single_threaded_random_lookups(bench: &mut Bencher) {
+    let _guard = SERIAL_TEST.lock();
+    let tmp_dir = tempfile::tempdir().unwrap();
+
+    let possible_crate_names = setup_bench(&tmp_dir);
+    let mut rng = rand::rng();
+
+    bench.iter(|| {
+      let cargo_manifest = super::CargoManifest::shared();
+      for _ in 0..LOOKUP_COUNT {
+        let possible_crate_name = possible_crate_names.choose(&mut rng).unwrap();
+        let _ = black_box(cargo_manifest.try_resolve_crate_path(possible_crate_name, &[]));
+      }
+    });
+  }
+
+  #[bench]
+  fn multi_threaded_random_lookups(bench: &mut Bencher) {
+    let _guard = SERIAL_TEST.lock();
+    let tmp_dir = tempfile::tempdir().unwrap();
+
+    let possible_crate_names = setup_bench(&tmp_dir);
+
+    bench.iter(|| {
+      let cargo_manifest = super::CargoManifest::shared();
+
+      (0..LOOKUP_COUNT).par_bridge().for_each(|_| {
+        let mut rng = rand::rng();
+        let possible_crate_name = possible_crate_names.choose(&mut rng).unwrap();
+        let _ = black_box(cargo_manifest.try_resolve_crate_path(possible_crate_name, &[]));
+      });
+    });
   }
 }

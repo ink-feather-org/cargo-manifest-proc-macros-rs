@@ -1,6 +1,9 @@
 {
   "rust-analyzer.cargo.targetDir": true,
-  "rust-analyzer.cargo.features": "all",
+  "rust-analyzer.cargo.noDefaultFeatures": true,
+  "rust-analyzer.cargo.features": [
+    "nightly"
+  ],
   "rust-analyzer.rustfmt.extraArgs": [
     "+nightly"
   ],

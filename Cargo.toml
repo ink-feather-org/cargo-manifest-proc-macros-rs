@@ -107,8 +107,9 @@ parking_lot = { version = "0.12" }
 [dev-dependencies]
 syn = { version = "2.0", default-features = false }
 tempfile = { version = "3.19", default-features = false }
-serial_test = { version = "3.2", default-features = false }
 tracing-test = "0.2"
+rand = { version = "0.9", default-features = false, features = ["thread_rng"] }
+rayon = { version = "1.10", default-features = false }
 
 [lints]
 workspace = true
