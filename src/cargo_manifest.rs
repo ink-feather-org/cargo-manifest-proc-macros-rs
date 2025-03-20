@@ -3,10 +3,7 @@
 
 use alloc::collections::BTreeMap;
 use parking_lot::{RwLock, RwLockReadGuard};
-use std::{
-  path::{Path, PathBuf},
-  process::Command,
-};
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use toml_edit::{ImDocument, Item, Table};
 use tracing::{info, trace};
@@ -564,7 +561,7 @@ impl CargoManifest {
   /// 2) If it has we already have the workspace manifest path.
   /// 3) If not specified this will be inferred as the first Cargo.toml with [workspace] upwards in the filesystem.
   #[must_use]
-  fn resolve_workspace_manifest_path_quick(
+  fn resolve_workspace_manifest_path(
     cargo_manifest_path: &Path,
     package_workspace_hint: Option<&Path>,
   ) -> PathBuf {
@@ -577,10 +574,10 @@ impl CargoManifest {
           .unwrap()
           .join(package_workspace_hint)
       };
-      if absolute_package_workspace_hint.is_dir() {
-        return absolute_package_workspace_hint.join("Cargo.toml");
+      if absolute_package_workspace_hint.ends_with("Cargo.toml") {
+        return absolute_package_workspace_hint;
       }
-      return absolute_package_workspace_hint;
+      return absolute_package_workspace_hint.join("Cargo.toml");
     }
 
     let mut current_path = cargo_manifest_path.parent().unwrap();
@@ -608,68 +605,6 @@ impl CargoManifest {
       "Could not find a workspace manifest for the crate manifest at \"{}\"!",
       cargo_manifest_path.display()
     );
-  }
-
-  #[must_use]
-  fn resolve_workspace_manifest_path(
-    cargo_manifest_path: &Path,
-    _package_workspace_hint: Option<&Path>,
-  ) -> PathBuf {
-    let slow =
-      Self::resolve_workspace_manifest_path_slow(cargo_manifest_path, _package_workspace_hint);
-    let quick =
-      Self::resolve_workspace_manifest_path_quick(cargo_manifest_path, _package_workspace_hint);
-    assert_eq!(slow, quick);
-    slow
-  }
-
-  /// https://github.com/bkchr/proc-macro-crate/blob/a5939f3fbf94279b45902119d97f881fefca6a0d/src/lib.rs#L243
-  #[must_use]
-  fn resolve_workspace_manifest_path_slow(
-    cargo_manifest_path: &Path,
-    _package_workspace_hint: Option<&Path>,
-  ) -> PathBuf {
-    let cmd_result = Command::new(
-      get_env_var("CARGO").unwrap_or_else(|| panic!("The environment variable CARGO must be set!")),
-    )
-    .arg("locate-project")
-    .args(["--workspace", "--message-format=plain"])
-    .arg(format!("--manifest-path={}", cargo_manifest_path.display()))
-    .output()
-    .expect("Failed to run `cargo locate-project`!");
-    let stdout = cmd_result.stdout;
-    let stderr = cmd_result.stderr;
-
-    trace!(
-      "Ran `cargo locate-project --workspace --message-format=plain --manifest-path={}`",
-      cargo_manifest_path.display()
-    );
-    trace!(
-      "`cargo locate-project` \n# stdout: \n\"{}\"\n# stderr:\n\"{}\"",
-      String::from_utf8_lossy(&stdout),
-      String::from_utf8_lossy(&stderr)
-    );
-
-    let path_string =
-      String::from_utf8(stdout).expect("Failed to parse `cargo locate-project` output!");
-    let path_str = path_string.trim();
-
-    let resolved_path = if path_str.is_empty() {
-      // If `workspace_manifest_path` returns `None`, we are probably in a vendored deps
-      // folder and cargo complaining that we have some package inside a workspace, that isn't
-      // part of the workspace. In this case we just use the `manifest_path` as the
-      // `workspace_manifest_path`.
-      cargo_manifest_path.to_owned()
-    } else {
-      PathBuf::from(path_str)
-    };
-
-    trace!(
-      "Resolved workspace manifest path: \"{}\"",
-      resolved_path.display()
-    );
-
-    resolved_path
   }
 
   #[must_use]
@@ -750,6 +685,86 @@ impl CargoManifest {
 #[cfg(test)]
 #[path = "shared_testing_benchmarking.rs"]
 mod shared_testing_benchmarking;
+
+#[cfg(test)]
+#[doc(hidden)]
+mod resolve_workspace_path_tests {
+  use tracing_test::traced_test;
+
+  use super::*;
+
+  #[test]
+  fn package_hint() {
+    let some_cargo_toml = PathBuf::from("/super-workspace/my-crate/Cargo.toml");
+
+    assert_eq!(
+      CargoManifest::resolve_workspace_manifest_path(
+        &some_cargo_toml,
+        Some(&PathBuf::from("workspace"))
+      ),
+      PathBuf::from("/super-workspace/my-crate/workspace/Cargo.toml")
+    );
+    assert_eq!(
+      CargoManifest::resolve_workspace_manifest_path(
+        &some_cargo_toml,
+        Some(&PathBuf::from("workspace/Cargo.toml"))
+      ),
+      PathBuf::from("/super-workspace/my-crate/workspace/Cargo.toml")
+    );
+    assert_eq!(
+      CargoManifest::resolve_workspace_manifest_path(
+        &some_cargo_toml,
+        Some(&PathBuf::from("/workspace/Cargo.toml"))
+      ),
+      PathBuf::from("/workspace/Cargo.toml")
+    );
+  }
+
+  fn fs_test_n_folders(number_of_nested_folders: usize) {
+    info!("Testing with {} nested folders", number_of_nested_folders);
+
+    let cargo_toml_no_workspace = r#"
+      [package]
+      name = "test"
+    "#;
+    let cargo_toml_workspace = r#"
+      [workspace]
+    "#;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    let cargo_toml_workspace_path = temp_dir.path().join("Cargo.toml");
+    std::fs::write(&cargo_toml_workspace_path, cargo_toml_workspace).unwrap();
+
+    let mut current_path = cargo_toml_workspace_path.parent().unwrap().to_owned();
+    for folder_number in 0..number_of_nested_folders {
+      let folder_name = "subfolder";
+      current_path = current_path.join(folder_name);
+      std::fs::create_dir(&current_path).unwrap();
+
+      if folder_number % 2 == 1 {
+        let cargo_toml_path = current_path.join("Cargo.toml");
+        std::fs::write(&cargo_toml_path, cargo_toml_no_workspace).unwrap();
+      }
+    }
+
+    let cargo_package_path = current_path.join("Cargo.toml");
+
+    assert_eq!(
+      CargoManifest::resolve_workspace_manifest_path(&cargo_package_path, None),
+      cargo_toml_workspace_path
+    );
+  }
+
+  #[test]
+  #[traced_test]
+  fn fs_test() {
+    fs_test_n_folders(1);
+    fs_test_n_folders(2);
+    fs_test_n_folders(3);
+    fs_test_n_folders(4);
+  }
+}
 
 #[cfg(test)]
 #[doc(hidden)]
