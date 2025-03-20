@@ -2,18 +2,26 @@
 // Based on: https://github.com/bevyengine/bevy/blob/main/crates/bevy_macro_utils/src/bevy_manifest.rs
 
 use alloc::collections::BTreeMap;
+use core::sync::atomic::{self, AtomicU64};
 use parking_lot::{RwLock, RwLockReadGuard};
-use std::path::{Path, PathBuf};
+use std::{
+  path::{Path, PathBuf},
+  time::{SystemTime, UNIX_EPOCH},
+};
 use thiserror::Error;
 use toml_edit::{ImDocument, Item, Table};
-use tracing::{info, trace};
+use tracing::{debug, error, info, trace};
 
 use crate::syn_utils::{crate_name_to_syn_path, pretty_format_syn_path};
 
 /// # Errors
 /// If the file metadata could not be read, an error is returned.
-fn get_mtime_from_path(file_path: &Path) -> Result<std::time::SystemTime, std::io::Error> {
+fn get_mtime_from_path(file_path: &Path) -> Result<SystemTime, std::io::Error> {
   std::fs::metadata(file_path).and_then(|metadata| metadata.modified())
+}
+
+fn system_time_to_ms(sys_time: SystemTime) -> u64 {
+  u64::try_from(sys_time.duration_since(UNIX_EPOCH).unwrap().as_millis()).unwrap_or(0)
 }
 
 fn get_env_var(name: &str) -> Option<String> {
@@ -78,7 +86,7 @@ struct WorkspaceDependencyResolver<'a> {
   /// The path to the user's crates workspace `Cargo.toml`.
   workspace_manifest_path: Option<PathBuf>,
   /// The modified time of the workspace `Cargo.toml`, when the `WorkspaceDependencyResolver` instance was created.
-  workspace_manifest_mtime: Option<std::time::SystemTime>,
+  workspace_manifest_mtime: Option<u64>,
   /// The key is the workspace dependency name.
   /// The value is the crate's package name.
   workspace_dependencies_map: Option<BTreeMap<String, String>>,
@@ -143,7 +151,9 @@ impl<'a> WorkspaceDependencyResolver<'a> {
         self.user_crate_manifest_path,
         self.package_workspace_hint,
       );
-      self.workspace_manifest_mtime = get_mtime_from_path(&workspace_cargo_toml_path).ok();
+      self.workspace_manifest_mtime = get_mtime_from_path(&workspace_cargo_toml_path)
+        .ok()
+        .map(system_time_to_ms);
       let workspace_cargo_toml =
         CargoManifest::load_workspace_cargo_toml(&workspace_cargo_toml_path);
       self.workspace_manifest_path = Some(workspace_cargo_toml_path);
@@ -179,17 +189,22 @@ pub struct CargoManifest {
   workspace_manifest_path: Option<PathBuf>,
 
   /// The modified time of the `Cargo.toml`, when the `CargoManifest` instance was created.
-  user_crate_manifest_mtime: std::time::SystemTime,
+  user_crate_manifest_mtime_ms: u64,
 
   /// The modified time of the workspace `Cargo.toml`, when the `CargoManifest` instance was created.
-  workspace_manifest_mtime: Option<std::time::SystemTime>,
+  workspace_manifest_mtime_ms: Option<u64>,
 
   /// The key is the crate's package name.
   /// The value is the renamed crate name.
   crate_dependencies: BTreeMap<String, DependencyState>,
+
+  package_last_mtime_syscall_ms: AtomicU64,
+  workspace_last_mtime_syscall_ms: AtomicU64,
 }
 
 impl CargoManifest {
+  const MTIME_CACHE_TIMEOUT_MS: u64 = 200;
+
   /// Returns a global shared instance of the [`CargoManifest`] struct.
   #[must_use = "This method returns the shared instance of the CargoManifest."]
   pub fn shared() -> RwLockReadGuard<'static, Self> {
@@ -200,8 +215,6 @@ impl CargoManifest {
     // Rust-Analyzer keeps the proc macro server running between invocations and only the environment variables change.
     // This means 'static variables are not reset between invocations for different crates.
     let current_cargo_manifest_path = Self::get_current_cargo_manifest_path();
-    let current_cargo_manifest_mtime = get_mtime_from_path(&current_cargo_manifest_path)
-      .expect("Could not get the mtime of the crate manifest!");
 
     let existing_shared_instance_rw_lock =
       MANIFESTS.read().get(&current_cargo_manifest_path).copied();
@@ -210,19 +223,49 @@ impl CargoManifest {
     if let Some(existing_shared_instance_rw_lock) = existing_shared_instance_rw_lock {
       let existing_shared_instance_guard = existing_shared_instance_rw_lock.read();
 
+      let current_cargo_manifest_mtime_ms = Self::get_mtime_from_path_cached(
+        &current_cargo_manifest_path,
+        &existing_shared_instance_guard.package_last_mtime_syscall_ms,
+        existing_shared_instance_guard.user_crate_manifest_mtime_ms,
+      )
+      .expect("Could not get the mtime of the crate manifest!");
+
       // Check if the mtime of the crate manifest has changed.
-      let mut a_relevant_cargo_toml_changed =
-        existing_shared_instance_guard.user_crate_manifest_mtime != current_cargo_manifest_mtime;
+      let mut a_relevant_cargo_toml_changed = false;
+
+      if existing_shared_instance_guard.user_crate_manifest_mtime_ms
+        != current_cargo_manifest_mtime_ms
+      {
+        a_relevant_cargo_toml_changed = true;
+        debug!(
+          "Package manifest changed: {:?} {:?}",
+          existing_shared_instance_guard.user_crate_manifest_mtime_ms,
+          current_cargo_manifest_mtime_ms
+        );
+      }
 
       // Check if the mtime of the workspace manifest has changed.
       if let Some(workspace_manifest_path) = existing_shared_instance_guard
         .workspace_manifest_path
         .as_ref()
       {
-        let workspace_cargo_toml_mtime = get_mtime_from_path(workspace_manifest_path);
+        let workspace_cargo_toml_mtime = Self::get_mtime_from_path_cached(
+          workspace_manifest_path,
+          &existing_shared_instance_guard.workspace_last_mtime_syscall_ms,
+          existing_shared_instance_guard
+            .workspace_manifest_mtime_ms
+            .unwrap(),
+        )
+        .ok();
 
-        a_relevant_cargo_toml_changed |= existing_shared_instance_guard.workspace_manifest_mtime
-          != workspace_cargo_toml_mtime.ok();
+        if existing_shared_instance_guard.workspace_manifest_mtime_ms != workspace_cargo_toml_mtime
+        {
+          a_relevant_cargo_toml_changed = true;
+          debug!(
+            "Workspace manifest changed: {:?} {:?}",
+            existing_shared_instance_guard.workspace_manifest_mtime_ms, workspace_cargo_toml_mtime
+          );
+        }
       }
 
       drop(existing_shared_instance_guard);
@@ -234,7 +277,7 @@ impl CargoManifest {
 
         let cargo_manifest = Self::new_with_current_env_vars(
           &current_cargo_manifest_path,
-          current_cargo_manifest_mtime,
+          current_cargo_manifest_mtime_ms,
         );
 
         // Overwrite the cache with the new cargo manifest version.
@@ -253,10 +296,15 @@ impl CargoManifest {
       return existing_shared_instance_rw_lock.read();
     }
 
+    let current_cargo_manifest_mtime_ms = system_time_to_ms(
+      get_mtime_from_path(&current_cargo_manifest_path)
+        .expect("Could not get the mtime of the crate manifest!"),
+    );
+
     // A new Cargo.toml has been requested, so we have to leak a new CargoManifest instance.
     let new_shared_instance = Box::leak(Box::new(RwLock::new(Self::new_with_current_env_vars(
       &current_cargo_manifest_path,
-      current_cargo_manifest_mtime,
+      current_cargo_manifest_mtime_ms,
     ))));
 
     // Overwrite the cache with the new cargo manifest version.
@@ -281,7 +329,8 @@ impl CargoManifest {
         let cargo_manifest_dir = get_env_var("CARGO_MANIFEST_DIR").unwrap_or_else(|| {
           panic!("The environment variable CARGO_MANIFEST_DIR must be set!");
         });
-        let mut cargo_manifest_path = PathBuf::from(cargo_manifest_dir);
+        let mut cargo_manifest_path = PathBuf::with_capacity(cargo_manifest_dir.len() + 30);
+        cargo_manifest_path.push(cargo_manifest_dir);
         cargo_manifest_path.push("Cargo.toml");
         cargo_manifest_path
       },
@@ -290,10 +339,43 @@ impl CargoManifest {
     cargo_manifest_path
   }
 
+  /// # Errors
+  /// If the file metadata could not be read, an error is returned.
+  fn get_mtime_from_path_cached(
+    file_path: &Path,
+    last_mtime_syscall_ms: &AtomicU64,
+    initial_mtime_ms: u64,
+  ) -> Result<u64, std::io::Error> {
+    let current_time_ms = system_time_to_ms(SystemTime::now());
+
+    let mtime_ms = if current_time_ms - last_mtime_syscall_ms.load(atomic::Ordering::Relaxed)
+      > Self::MTIME_CACHE_TIMEOUT_MS
+    {
+      // We only check the mtime of the file when the cached value is too old.
+      let fresh_mtime = get_mtime_from_path(file_path)?;
+      let fresh_mtime_ms = system_time_to_ms(fresh_mtime);
+      last_mtime_syscall_ms.store(current_time_ms, atomic::Ordering::Relaxed);
+
+      trace!(
+        "File mtime retrieved from fs: {:?} {:?}",
+        initial_mtime_ms,
+        fresh_mtime_ms,
+      );
+
+      fresh_mtime_ms
+    } else {
+      trace!("File mtime not checked: {:?}", initial_mtime_ms);
+
+      initial_mtime_ms
+    };
+
+    Ok(mtime_ms)
+  }
+
   #[must_use = "This is a constructor."]
   fn new_with_current_env_vars(
     cargo_manifest_path: &Path,
-    user_crate_manifest_mtime: std::time::SystemTime,
+    user_crate_manifest_mtime_ms: u64,
   ) -> Self {
     let crate_manifest = Self::parse_cargo_manifest(cargo_manifest_path);
 
@@ -311,15 +393,20 @@ impl CargoManifest {
       &mut workspace_dependencies,
     );
 
-    let workspace_manifest_mtime = workspace_dependencies.workspace_manifest_mtime;
+    let workspace_manifest_mtime_ms = workspace_dependencies.workspace_manifest_mtime;
     let workspace_manifest_path = workspace_dependencies.workspace_manifest_path;
+
+    let current_time_ms = system_time_to_ms(SystemTime::now());
 
     Self {
       user_crate_name,
-      user_crate_manifest_mtime,
+      user_crate_manifest_mtime_ms,
       workspace_manifest_path,
-      workspace_manifest_mtime,
+      workspace_manifest_mtime_ms,
       crate_dependencies: resolved_dependencies,
+
+      package_last_mtime_syscall_ms: AtomicU64::new(current_time_ms),
+      workspace_last_mtime_syscall_ms: AtomicU64::new(0),
     }
   }
 
@@ -809,10 +896,13 @@ mod resolver_tests {
 
     CargoManifest {
       user_crate_name,
-      user_crate_manifest_mtime: std::time::SystemTime::UNIX_EPOCH,
+      user_crate_manifest_mtime_ms: 0,
       workspace_manifest_path: None,
-      workspace_manifest_mtime: None,
+      workspace_manifest_mtime_ms: None,
       crate_dependencies: resolved_dependencies,
+
+      package_last_mtime_syscall_ms: AtomicU64::new(0),
+      workspace_last_mtime_syscall_ms: AtomicU64::new(0),
     }
   }
 
@@ -1249,8 +1339,63 @@ pub mod fs_tests {
     shared_testing_benchmarking::{setup_fs_test, SERIAL_TEST},
     *,
   };
-  use std::io::{Seek, Write};
+  use std::{
+    io::{Seek, Write},
+    time::Duration,
+  };
   use tracing_test::traced_test;
+
+  #[test]
+  #[traced_test]
+  fn single_lookup() {
+    let _guard = SERIAL_TEST.lock();
+    let tmp_dir = tempfile::tempdir().unwrap();
+
+    let crate_manifest = r#"
+      [package]
+      name = "test"
+
+      [dependencies]
+      test_dep = "0.1"
+    "#;
+
+    let ((crate_manifest_path, _), _) = setup_fs_test(&tmp_dir, None, crate_manifest);
+
+    // set env var
+    #[expect(unsafe_code)]
+    // SAFETY: The test is marked as serial, so it is safe to set the environment variable.
+    unsafe {
+      std::env::remove_var("CARGO_MANIFEST_PATH");
+      std::env::set_var("CARGO_MANIFEST_DIR", crate_manifest_path.parent().unwrap());
+    };
+
+    let cargo_manifest = CargoManifest::shared();
+
+    let crate_to_resolve = "test_dep";
+    let expected_path = "::test_dep".to_string();
+    assert_eq!(
+      pretty_format_syn_path(
+        cargo_manifest
+          .try_resolve_crate_path(crate_to_resolve, &[])
+          .as_ref()
+          .unwrap()
+      ),
+      expected_path
+    );
+
+    drop(cargo_manifest);
+
+    let cargo_manifest = CargoManifest::shared();
+    assert_eq!(
+      pretty_format_syn_path(
+        cargo_manifest
+          .try_resolve_crate_path(crate_to_resolve, &[])
+          .as_ref()
+          .unwrap()
+      ),
+      expected_path
+    );
+  }
 
   #[test]
   fn modify_crate_manifest() {
@@ -1308,16 +1453,21 @@ pub mod fs_tests {
       .write_all(updated_crated_manifest.as_bytes())
       .unwrap();
     // update the mtime
-    crate_manifest_file
-      .set_modified(std::time::SystemTime::now())
-      .unwrap();
+    std::thread::sleep(Duration::from_millis(10));
+    crate_manifest_file.set_modified(SystemTime::now()).unwrap();
     crate_manifest_file.flush().unwrap();
     let new_mtime = get_mtime_from_path(&crate_manifest_path).unwrap();
     drop(cargo_manifest);
 
-    let cargo_manifest = CargoManifest::shared();
     // check that the mtime has changed
     assert_ne!(initial_mtime, new_mtime);
+
+    // sleep for the cache to expire
+    std::thread::sleep(Duration::from_millis(
+      CargoManifest::MTIME_CACHE_TIMEOUT_MS + 100,
+    ));
+
+    let cargo_manifest = CargoManifest::shared();
 
     // resolve the path for the updated crate manifest
     let expected_path = "::test_dep_renamed".to_string();
@@ -1420,12 +1570,19 @@ pub mod fs_tests {
       .write_all(updated_workspace_manifest.as_bytes())
       .unwrap();
     // update the mtime
+    std::thread::sleep(Duration::from_millis(10));
     workspace_manifest_file
-      .set_modified(std::time::SystemTime::now())
+      .set_modified(SystemTime::now())
       .unwrap();
     workspace_manifest_file.flush().unwrap();
     let new_mtime = get_mtime_from_path(&workspace_manifest_path).unwrap();
     drop(cargo_manifest);
+
+    // sleep for the cache to expire
+    std::thread::sleep(Duration::from_millis(
+      CargoManifest::MTIME_CACHE_TIMEOUT_MS + 100,
+    ));
+
     let cargo_manifest = CargoManifest::shared();
 
     // check that the mtime has changed
@@ -1456,5 +1613,46 @@ pub mod fs_tests {
       expected_path
     );
     drop(cargo_manifest);
+  }
+}
+
+#[cfg(all(feature = "nightly", not(feature = "proc-macro"), test))]
+mod benches {
+  use std::hint::black_box;
+
+  use super::{shared_testing_benchmarking::setup_fs_test, *};
+  extern crate test;
+  use test::Bencher;
+
+  #[bench]
+  fn test_system_time_to_ms(b: &mut Bencher) {
+    let now = SystemTime::now();
+    b.iter(|| {
+      let _ = black_box(system_time_to_ms(now));
+    });
+  }
+
+  #[bench]
+  fn get_mtime_from_path(b: &mut Bencher) {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let ((path, _), _) = setup_fs_test(&tmp_dir, None, "");
+    b.iter(|| {
+      let _ = black_box(super::get_mtime_from_path(&path));
+    });
+  }
+
+  #[bench]
+  fn get_mtime_from_path_cached(b: &mut Bencher) {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let ((path, _), _) = setup_fs_test(&tmp_dir, None, "");
+    let last_cached_mtime = AtomicU64::new(system_time_to_ms(SystemTime::now()));
+    let orginal_mtime_ms = 0_u64;
+    b.iter(|| {
+      let _ = black_box(CargoManifest::get_mtime_from_path_cached(
+        &path,
+        &last_cached_mtime,
+        orginal_mtime_ms,
+      ));
+    });
   }
 }

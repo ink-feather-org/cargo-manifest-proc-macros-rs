@@ -3,6 +3,8 @@
 ```bash
 # run the benchmarks
 cargo bench --no-default-features --features "nightly"
+# benchmark inline benchmarks
+cargo bench --package cargo-manifest-proc-macros --lib --features nightly --no-default-features -- cargo_manifest::benches::get_mtime_from_path cargo_manifest::benches::get_mtime_from_path_cached --exact --show-output
 # compute a flamegraph for a benchmark
 RUSTFLAGS="-Clink-arg=-fuse-ld=lld -Clink-arg=-Wl,--no-rosegment" CARGO_PROFILE_RELEASE_DEBUG=true cargo +nightly flamegraph --no-default-features --features "nightly" --bench single_threaded_random_lookups
 RUSTFLAGS="-Clink-arg=-fuse-ld=lld -Clink-arg=-Wl,--no-rosegment" CARGO_PROFILE_RELEASE_DEBUG=true cargo +nightly flamegraph --no-default-features --features "nightly" --bench fixed_single_threaded_random_lookups

@@ -7,10 +7,10 @@ use cargo_manifest_proc_macros::CargoManifest;
 #[path = "../src/shared_testing_benchmarking.rs"]
 mod shared;
 
-const BENCHMARK_FIXED_SINGLE_THREADED_CRATE_NAME_LOOKUP_COUNT: usize = 5_000_000;
-
 #[cfg(all(feature = "nightly", not(feature = "proc-macro")))]
 mod benches {
+  const BENCHMARK_FIXED_SINGLE_THREADED_CRATE_NAME_LOOKUP_COUNT: usize = 5_000_000;
+
   use super::{shared::setup_bench, *};
   use core::hint::black_box;
   use rand::prelude::IndexedRandom;
