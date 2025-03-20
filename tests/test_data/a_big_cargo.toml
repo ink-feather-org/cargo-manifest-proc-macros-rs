@@ -1,3 +1,5 @@
+[workspace]
+
 [workspace.dependencies]
 serde = { version = "1.0" }
 tokio = { version = "1" }

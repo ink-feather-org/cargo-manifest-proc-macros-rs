@@ -10,7 +10,7 @@ use std::{
 };
 use tempfile::TempDir;
 
-pub const BENCHMARK_CRATE_NAME_LOOKUP_BATCH_SIZE: usize = 100_000;
+pub const BENCHMARK_CRATE_NAME_LOOKUP_BATCH_SIZE: usize = 50_000;
 
 pub static SERIAL_TEST: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 

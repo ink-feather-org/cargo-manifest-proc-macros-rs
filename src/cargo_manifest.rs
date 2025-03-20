@@ -10,6 +10,12 @@ use tracing::{info, trace};
 
 use crate::syn_utils::{crate_name_to_syn_path, pretty_format_syn_path};
 
+/// # Errors
+/// If the file metadata could not be read, an error is returned.
+fn get_mtime_from_path(file_path: &Path) -> Result<std::time::SystemTime, std::io::Error> {
+  std::fs::metadata(file_path).and_then(|metadata| metadata.modified())
+}
+
 fn get_env_var(name: &str) -> Option<String> {
   #[cfg(not(all(feature = "nightly", feature = "proc-macro")))]
   let env_var = std::env::var(name);
@@ -69,6 +75,8 @@ struct WorkspaceDependencyResolver<'a> {
   user_crate_manifest_path: &'a Path,
   /// The path to the workspace `Cargo.toml`, if it is specified in the user's crate manifest.
   package_workspace_hint: Option<&'a Path>,
+  /// The path to the user's crates workspace `Cargo.toml`.
+  workspace_manifest_path: Option<PathBuf>,
   /// The modified time of the workspace `Cargo.toml`, when the `WorkspaceDependencyResolver` instance was created.
   workspace_manifest_mtime: Option<std::time::SystemTime>,
   /// The key is the workspace dependency name.
@@ -85,6 +93,7 @@ impl<'a> WorkspaceDependencyResolver<'a> {
     Self {
       user_crate_manifest_path,
       package_workspace_hint,
+      workspace_manifest_path: None,
       workspace_manifest_mtime: None,
       workspace_dependencies_map: None,
     }
@@ -132,12 +141,12 @@ impl<'a> WorkspaceDependencyResolver<'a> {
     let workspace_dependencies = self.workspace_dependencies_map.get_or_insert_with(|| {
       let workspace_cargo_toml_path = CargoManifest::resolve_workspace_manifest_path(
         self.user_crate_manifest_path,
-        self.package_workspace_hint.as_deref(),
+        self.package_workspace_hint,
       );
-      self.workspace_manifest_mtime =
-        CargoManifest::get_cargo_manifest_mtime(&workspace_cargo_toml_path).ok();
+      self.workspace_manifest_mtime = get_mtime_from_path(&workspace_cargo_toml_path).ok();
       let workspace_cargo_toml =
         CargoManifest::load_workspace_cargo_toml(&workspace_cargo_toml_path);
+      self.workspace_manifest_path = Some(workspace_cargo_toml_path);
       Self::load_workspace_cargo_manifest(workspace_cargo_toml.as_table())
     });
 
@@ -165,8 +174,9 @@ impl<'a> WorkspaceDependencyResolver<'a> {
 pub struct CargoManifest {
   /// The name of the crate that is currently being built.
   user_crate_name: String,
-  /// The path to the workspace `Cargo.toml`, if it is specified in the user's crate manifest.
-  package_workspace_hint: Option<PathBuf>,
+
+  /// The path to the user's crates workspace `Cargo.toml`.
+  workspace_manifest_path: Option<PathBuf>,
 
   /// The modified time of the `Cargo.toml`, when the `CargoManifest` instance was created.
   user_crate_manifest_mtime: std::time::SystemTime,
@@ -190,8 +200,8 @@ impl CargoManifest {
     // Rust-Analyzer keeps the proc macro server running between invocations and only the environment variables change.
     // This means 'static variables are not reset between invocations for different crates.
     let current_cargo_manifest_path = Self::get_current_cargo_manifest_path();
-    let current_cargo_manifest_mtime = Self::get_cargo_manifest_mtime(&current_cargo_manifest_path)
-      .expect("The mtime of the crate manifest should be present!");
+    let current_cargo_manifest_mtime = get_mtime_from_path(&current_cargo_manifest_path)
+      .expect("Could not get the mtime of the crate manifest!");
 
     let existing_shared_instance_rw_lock =
       MANIFESTS.read().get(&current_cargo_manifest_path).copied();
@@ -205,17 +215,11 @@ impl CargoManifest {
         existing_shared_instance_guard.user_crate_manifest_mtime != current_cargo_manifest_mtime;
 
       // Check if the mtime of the workspace manifest has changed.
-      if existing_shared_instance_guard
-        .workspace_manifest_mtime
-        .is_some()
+      if let Some(workspace_manifest_path) = existing_shared_instance_guard
+        .workspace_manifest_path
+        .as_ref()
       {
-        let workspace_cargo_toml_path = Self::resolve_workspace_manifest_path(
-          &current_cargo_manifest_path,
-          existing_shared_instance_guard
-            .package_workspace_hint
-            .as_deref(),
-        );
-        let workspace_cargo_toml_mtime = Self::get_cargo_manifest_mtime(&workspace_cargo_toml_path);
+        let workspace_cargo_toml_mtime = get_mtime_from_path(workspace_manifest_path);
 
         a_relevant_cargo_toml_changed |= existing_shared_instance_guard.workspace_manifest_mtime
           != workspace_cargo_toml_mtime.ok();
@@ -283,19 +287,7 @@ impl CargoManifest {
       },
       PathBuf::from,
     );
-    assert!(
-      cargo_manifest_path.exists(),
-      "Cargo.toml does not exist at \"{}\"!",
-      cargo_manifest_path.display()
-    );
     cargo_manifest_path
-  }
-
-  #[expect(clippy::missing_errors_doc)]
-  fn get_cargo_manifest_mtime(
-    cargo_manifest_path: &Path,
-  ) -> Result<std::time::SystemTime, std::io::Error> {
-    std::fs::metadata(cargo_manifest_path).and_then(|metadata| metadata.modified())
   }
 
   #[must_use = "This is a constructor."]
@@ -320,11 +312,12 @@ impl CargoManifest {
     );
 
     let workspace_manifest_mtime = workspace_dependencies.workspace_manifest_mtime;
+    let workspace_manifest_path = workspace_dependencies.workspace_manifest_path;
 
     Self {
       user_crate_name,
-      package_workspace_hint,
       user_crate_manifest_mtime,
+      workspace_manifest_path,
       workspace_manifest_mtime,
       crate_dependencies: resolved_dependencies,
     }
@@ -584,13 +577,22 @@ impl CargoManifest {
     loop {
       let workspace_manifest_path = current_path.join("Cargo.toml");
       if workspace_manifest_path.exists() {
-        let workspace_manifest = Self::parse_cargo_manifest(&workspace_manifest_path);
-        if workspace_manifest
-          .get("workspace")
-          .and_then(Item::as_table)
-          .is_some()
-        {
-          return workspace_manifest_path;
+        // Parsing the full toml here is too expensive.
+        // We only need to check if there is a line as follows: `<optional-whitespace> [workspace] <optional-whitespace>`
+        let workspace_manifest_string = std::fs::read_to_string(&workspace_manifest_path)
+          .unwrap_or_else(|err| {
+            panic!(
+              "Unable to read workspace cargo manifest: {} - {err}",
+              workspace_manifest_path.display()
+            )
+          });
+
+        // This breaks when a user has a Cargo.toml in the middle with a multiline string that contains `[workspace]` in one line.
+        // However, this is a rare edge case.
+        for line in workspace_manifest_string.lines() {
+          if line.trim() == "[workspace]" {
+            return workspace_manifest_path;
+          }
         }
       }
 
@@ -727,9 +729,9 @@ mod resolve_workspace_path_tests {
       [package]
       name = "test"
     "#;
-    let cargo_toml_workspace = r#"
+    let cargo_toml_workspace = r"
       [workspace]
-    "#;
+    ";
 
     let temp_dir = tempfile::tempdir().unwrap();
 
@@ -794,6 +796,7 @@ mod resolver_tests {
     let mut workspace_resolver = WorkspaceDependencyResolver {
       user_crate_manifest_path: &test_path,
       package_workspace_hint: None,
+      workspace_manifest_path: None,
       workspace_manifest_mtime: None,
       workspace_dependencies_map: workspace_dependency_map,
     };
@@ -806,8 +809,8 @@ mod resolver_tests {
 
     CargoManifest {
       user_crate_name,
-      package_workspace_hint: None,
       user_crate_manifest_mtime: std::time::SystemTime::UNIX_EPOCH,
+      workspace_manifest_path: None,
       workspace_manifest_mtime: None,
       crate_dependencies: resolved_dependencies,
     }
@@ -1280,7 +1283,7 @@ pub mod fs_tests {
       std::env::remove_var("CARGO_MANIFEST_PATH");
       std::env::set_var("CARGO_MANIFEST_DIR", crate_manifest_path.parent().unwrap());
     };
-    let initial_mtime = CargoManifest::get_cargo_manifest_mtime(&crate_manifest_path).unwrap();
+    let initial_mtime = get_mtime_from_path(&crate_manifest_path).unwrap();
 
     let cargo_manifest = CargoManifest::shared();
 
@@ -1309,7 +1312,7 @@ pub mod fs_tests {
       .set_modified(std::time::SystemTime::now())
       .unwrap();
     crate_manifest_file.flush().unwrap();
-    let new_mtime = CargoManifest::get_cargo_manifest_mtime(&crate_manifest_path).unwrap();
+    let new_mtime = get_mtime_from_path(&crate_manifest_path).unwrap();
     drop(cargo_manifest);
 
     let cargo_manifest = CargoManifest::shared();
@@ -1392,7 +1395,7 @@ pub mod fs_tests {
       std::env::remove_var("CARGO_MANIFEST_PATH");
       std::env::set_var("CARGO_MANIFEST_DIR", crate_manifest_path.parent().unwrap());
     };
-    let initial_mtime = CargoManifest::get_cargo_manifest_mtime(&crate_manifest_path).unwrap();
+    let initial_mtime = get_mtime_from_path(&crate_manifest_path).unwrap();
 
     let cargo_manifest = CargoManifest::shared();
 
@@ -1421,7 +1424,7 @@ pub mod fs_tests {
       .set_modified(std::time::SystemTime::now())
       .unwrap();
     workspace_manifest_file.flush().unwrap();
-    let new_mtime = CargoManifest::get_cargo_manifest_mtime(&workspace_manifest_path).unwrap();
+    let new_mtime = get_mtime_from_path(&workspace_manifest_path).unwrap();
     drop(cargo_manifest);
     let cargo_manifest = CargoManifest::shared();
 
