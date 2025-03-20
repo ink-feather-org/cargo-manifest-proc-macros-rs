@@ -6,7 +6,7 @@ use cargo_manifest_proc_macros::CargoManifest;
 #[path = "../src/shared_testing_benchmarking.rs"]
 mod shared;
 
-#[cfg(feature = "nightly")]
+#[cfg(all(feature = "nightly", not(feature = "proc-macro")))]
 mod benches {
   use core::hint::black_box;
   extern crate test;

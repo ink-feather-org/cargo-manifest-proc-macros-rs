@@ -70,6 +70,8 @@ enum DependencyState {
 struct WorkspaceDependencyResolver<'a> {
   /// The path to the user's crate manifest.
   user_crate_manifest_path: &'a Path,
+  /// The path to the workspace `Cargo.toml`, if it is specified in the user's crate manifest.
+  package_workspace_hint: Option<&'a Path>,
   /// The modified time of the workspace `Cargo.toml`, when the `WorkspaceDependencyResolver` instance was created.
   workspace_manifest_mtime: Option<std::time::SystemTime>,
   /// The key is the workspace dependency name.
@@ -79,9 +81,13 @@ struct WorkspaceDependencyResolver<'a> {
 
 impl<'a> WorkspaceDependencyResolver<'a> {
   #[must_use = "This is a constructor."]
-  const fn new(user_crate_manifest_path: &'a Path) -> Self {
+  const fn new(
+    user_crate_manifest_path: &'a Path,
+    package_workspace_hint: Option<&'a Path>,
+  ) -> Self {
     Self {
       user_crate_manifest_path,
+      package_workspace_hint,
       workspace_manifest_mtime: None,
       workspace_dependencies_map: None,
     }
@@ -127,8 +133,10 @@ impl<'a> WorkspaceDependencyResolver<'a> {
   ) -> &str {
     // Get or initialize the workspace dependencies.
     let workspace_dependencies = self.workspace_dependencies_map.get_or_insert_with(|| {
-      let workspace_cargo_toml_path =
-        CargoManifest::resolve_workspace_manifest_path(self.user_crate_manifest_path);
+      let workspace_cargo_toml_path = CargoManifest::resolve_workspace_manifest_path(
+        self.user_crate_manifest_path,
+        self.package_workspace_hint.as_deref(),
+      );
       self.workspace_manifest_mtime =
         CargoManifest::get_cargo_manifest_mtime(&workspace_cargo_toml_path).ok();
       let workspace_cargo_toml =
@@ -160,6 +168,8 @@ impl<'a> WorkspaceDependencyResolver<'a> {
 pub struct CargoManifest {
   /// The name of the crate that is currently being built.
   user_crate_name: String,
+  /// The path to the workspace `Cargo.toml`, if it is specified in the user's crate manifest.
+  package_workspace_hint: Option<PathBuf>,
 
   /// The modified time of the `Cargo.toml`, when the `CargoManifest` instance was created.
   user_crate_manifest_mtime: std::time::SystemTime,
@@ -202,8 +212,12 @@ impl CargoManifest {
         .workspace_manifest_mtime
         .is_some()
       {
-        let workspace_cargo_toml_path =
-          Self::resolve_workspace_manifest_path(&current_cargo_manifest_path);
+        let workspace_cargo_toml_path = Self::resolve_workspace_manifest_path(
+          &current_cargo_manifest_path,
+          existing_shared_instance_guard
+            .package_workspace_hint
+            .as_deref(),
+        );
         let workspace_cargo_toml_mtime = Self::get_cargo_manifest_mtime(&workspace_cargo_toml_path);
 
         a_relevant_cargo_toml_changed |= existing_shared_instance_guard.workspace_manifest_mtime
@@ -296,8 +310,12 @@ impl CargoManifest {
 
     // Extract the user crate package name.
     let user_crate_name = Self::extract_user_crate_name(crate_manifest.as_table());
+    // Extract the workspace hint.
+    let package_workspace_hint =
+      Self::extract_user_crate_package_workspace_hint(crate_manifest.as_table());
 
-    let mut workspace_dependencies = WorkspaceDependencyResolver::new(cargo_manifest_path);
+    let mut workspace_dependencies =
+      WorkspaceDependencyResolver::new(cargo_manifest_path, package_workspace_hint.as_deref());
 
     let resolved_dependencies = Self::extract_dependency_map_for_cargo_manifest(
       crate_manifest.as_table(),
@@ -308,6 +326,7 @@ impl CargoManifest {
 
     Self {
       user_crate_name,
+      package_workspace_hint,
       user_crate_manifest_mtime,
       workspace_manifest_mtime,
       crate_dependencies: resolved_dependencies,
@@ -322,6 +341,15 @@ impl CargoManifest {
       .and_then(Item::as_str)
       .expect("The package name in the Cargo.toml should be a string")
       .to_string()
+  }
+
+  #[must_use]
+  fn extract_user_crate_package_workspace_hint(cargo_manifest: &Table) -> Option<PathBuf> {
+    cargo_manifest
+      .get("package")
+      .and_then(|package_section| package_section.get("workspace"))
+      .and_then(Item::as_str)
+      .map(PathBuf::from)
   }
 
   fn target_dependencies_tables(cargo_toml: &Table) -> impl Iterator<Item = &Table> {
@@ -529,9 +557,78 @@ impl CargoManifest {
     ))
   }
 
+  /// A pure rust re-implementation of the `cargo locate-project` command.
+  /// The algorithm is explained here: https://doc.rust-lang.org/cargo/reference/manifest.html#the-workspace-field
+  ///
+  /// 1) We take a look at the crate manifest to see if it has a [package.workspace] section. (If it is a folder path we append `Cargo.toml`.)
+  /// 2) If it has we already have the workspace manifest path.
+  /// 3) If not specified this will be inferred as the first Cargo.toml with [workspace] upwards in the filesystem.
+  #[must_use]
+  fn resolve_workspace_manifest_path_quick(
+    cargo_manifest_path: &Path,
+    package_workspace_hint: Option<&Path>,
+  ) -> PathBuf {
+    if let Some(package_workspace_hint) = package_workspace_hint {
+      let absolute_package_workspace_hint = if package_workspace_hint.is_absolute() {
+        package_workspace_hint.to_owned()
+      } else {
+        cargo_manifest_path
+          .parent()
+          .unwrap()
+          .join(package_workspace_hint)
+      };
+      if absolute_package_workspace_hint.is_dir() {
+        return absolute_package_workspace_hint.join("Cargo.toml");
+      }
+      return absolute_package_workspace_hint;
+    }
+
+    let mut current_path = cargo_manifest_path.parent().unwrap();
+    loop {
+      let workspace_manifest_path = current_path.join("Cargo.toml");
+      if workspace_manifest_path.exists() {
+        let workspace_manifest = Self::parse_cargo_manifest(&workspace_manifest_path);
+        if workspace_manifest
+          .get("workspace")
+          .and_then(Item::as_table)
+          .is_some()
+        {
+          return workspace_manifest_path;
+        }
+      }
+
+      // Move up one directory.
+      match current_path.parent() {
+        Some(parent) => current_path = parent,
+        None => break,
+      }
+    }
+
+    panic!(
+      "Could not find a workspace manifest for the crate manifest at \"{}\"!",
+      cargo_manifest_path.display()
+    );
+  }
+
+  #[must_use]
+  fn resolve_workspace_manifest_path(
+    cargo_manifest_path: &Path,
+    _package_workspace_hint: Option<&Path>,
+  ) -> PathBuf {
+    let slow =
+      Self::resolve_workspace_manifest_path_slow(cargo_manifest_path, _package_workspace_hint);
+    let quick =
+      Self::resolve_workspace_manifest_path_quick(cargo_manifest_path, _package_workspace_hint);
+    assert_eq!(slow, quick);
+    slow
+  }
+
   /// https://github.com/bkchr/proc-macro-crate/blob/a5939f3fbf94279b45902119d97f881fefca6a0d/src/lib.rs#L243
   #[must_use]
-  fn resolve_workspace_manifest_path(cargo_manifest_path: &Path) -> PathBuf {
+  fn resolve_workspace_manifest_path_slow(
+    cargo_manifest_path: &Path,
+    _package_workspace_hint: Option<&Path>,
+  ) -> PathBuf {
     let cmd_result = Command::new(
       get_env_var("CARGO").unwrap_or_else(|| panic!("The environment variable CARGO must be set!")),
     )
@@ -681,6 +778,7 @@ mod resolver_tests {
     let test_path = PathBuf::from("Invalid Path During Testing");
     let mut workspace_resolver = WorkspaceDependencyResolver {
       user_crate_manifest_path: &test_path,
+      package_workspace_hint: None,
       workspace_manifest_mtime: None,
       workspace_dependencies_map: workspace_dependency_map,
     };
@@ -693,6 +791,7 @@ mod resolver_tests {
 
     CargoManifest {
       user_crate_name,
+      package_workspace_hint: None,
       user_crate_manifest_mtime: std::time::SystemTime::UNIX_EPOCH,
       workspace_manifest_mtime: None,
       crate_dependencies: resolved_dependencies,

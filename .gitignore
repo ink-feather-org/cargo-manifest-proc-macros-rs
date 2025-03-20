@@ -2,3 +2,6 @@
 target
 crates/**/target
 **/*.rs.bk
+perf.data
+perf.data.old
+flamegraph.svg
