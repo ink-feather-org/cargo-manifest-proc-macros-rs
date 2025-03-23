@@ -4,11 +4,13 @@
   feature(proc_macro_tracked_env)
 )]
 #![cfg_attr(all(feature = "nightly", feature = "proc-macro"), feature(track_path))]
-#![cfg_attr(all(feature = "nightly", not(feature = "proc-macro")), feature(test))]
+#![cfg_attr(feature = "nightly", feature(test))]
 
 extern crate alloc;
 #[cfg(all(feature = "nightly", feature = "proc-macro"))]
 extern crate proc_macro;
+
+mod toml_strip;
 
 mod cargo_manifest;
 

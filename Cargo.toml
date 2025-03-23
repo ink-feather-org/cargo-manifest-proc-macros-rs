@@ -91,8 +91,8 @@ rust-version = "1.83.0"                                                         
 
 [features]
 default = ["proc-macro"]
-nightly = []
-proc-macro = ["syn/proc-macro"]
+nightly = ["proc-macro2/nightly"]
+proc-macro = ["syn/proc-macro", "proc-macro2/proc-macro"]
 
 [dependencies]
 tracing = { version = "0.1", default-features = false }
@@ -102,7 +102,8 @@ syn = { version = "2.0", default-features = false, features = [
 ] }
 thiserror = { version = "2.0", default-features = false }
 toml_edit = { version = "0.22", default-features = false, features = ["parse"] }
-parking_lot = { version = "0.12" }
+parking_lot = { version = "0.12", default-features = false }
+proc-macro2 = { version = "1.0.94", default-features = false }
 
 [dev-dependencies]
 syn = { version = "2.0", default-features = false }
@@ -110,6 +111,7 @@ tempfile = { version = "3.19", default-features = false }
 tracing-test = "0.2"
 rand = { version = "0.9", default-features = false, features = ["thread_rng"] }
 rayon = { version = "1.10", default-features = false }
+pretty_assertions = "1.4"
 
 [lints]
 workspace = true

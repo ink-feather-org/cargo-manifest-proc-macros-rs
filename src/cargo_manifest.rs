@@ -2,7 +2,10 @@
 // Based on: https://github.com/bevyengine/bevy/blob/main/crates/bevy_macro_utils/src/bevy_manifest.rs
 
 use alloc::collections::BTreeMap;
-use core::sync::atomic::{self, AtomicU64};
+use core::{
+  cell::RefCell,
+  sync::atomic::{self, AtomicU64},
+};
 use parking_lot::{RwLock, RwLockReadGuard};
 use std::{
   path::{Path, PathBuf},
@@ -12,7 +15,25 @@ use thiserror::Error;
 use toml_edit::{ImDocument, Item, Table};
 use tracing::{debug, error, info, trace};
 
-use crate::syn_utils::{crate_name_to_syn_path, pretty_format_syn_path};
+use crate::{
+  syn_utils::{crate_name_to_syn_path, pretty_format_syn_path},
+  toml_strip,
+};
+
+fn get_system_time_fast(invalidate_cache: bool) -> SystemTime {
+  thread_local! {
+    static LAST_TIME: RefCell<SystemTime> = const { RefCell::new(UNIX_EPOCH) };
+  }
+
+  LAST_TIME.with(|last_time| {
+    let mut last_time = last_time.borrow_mut();
+    if invalidate_cache || *last_time == UNIX_EPOCH {
+      *last_time = SystemTime::now();
+    }
+
+    *last_time
+  })
+}
 
 /// # Errors
 /// If the file metadata could not be read, an error is returned.
@@ -211,6 +232,8 @@ impl CargoManifest {
     static MANIFESTS: RwLock<BTreeMap<PathBuf, &'static RwLock<CargoManifest>>> =
       RwLock::new(BTreeMap::new());
 
+    let _ = get_system_time_fast(true);
+
     // Get the current cargo manifest path and its modified time.
     // Rust-Analyzer keeps the proc macro server running between invocations and only the environment variables change.
     // This means 'static variables are not reset between invocations for different crates.
@@ -346,7 +369,7 @@ impl CargoManifest {
     last_mtime_syscall_ms: &AtomicU64,
     initial_mtime_ms: u64,
   ) -> Result<u64, std::io::Error> {
-    let current_time_ms = system_time_to_ms(SystemTime::now());
+    let current_time_ms = system_time_to_ms(get_system_time_fast(false));
 
     let mtime_ms = if current_time_ms - last_mtime_syscall_ms.load(atomic::Ordering::Relaxed)
       > Self::MTIME_CACHE_TIMEOUT_MS
@@ -377,7 +400,7 @@ impl CargoManifest {
     cargo_manifest_path: &Path,
     user_crate_manifest_mtime_ms: u64,
   ) -> Self {
-    let crate_manifest = Self::parse_cargo_manifest(cargo_manifest_path);
+    let crate_manifest = Self::parse_cargo_manifest_from_fs(cargo_manifest_path);
 
     // Extract the user crate package name.
     let user_crate_name = Self::extract_user_crate_name(crate_manifest.as_table());
@@ -396,7 +419,7 @@ impl CargoManifest {
     let workspace_manifest_mtime_ms = workspace_dependencies.workspace_manifest_mtime;
     let workspace_manifest_path = workspace_dependencies.workspace_manifest_path;
 
-    let current_time_ms = system_time_to_ms(SystemTime::now());
+    let current_time_ms = system_time_to_ms(get_system_time_fast(false));
 
     Self {
       user_crate_name,
@@ -510,10 +533,10 @@ impl CargoManifest {
   }
 
   #[must_use]
-  fn parse_cargo_manifest(cargo_manifest_path: &Path) -> ImDocument<String> {
+  fn parse_cargo_manifest_from_fs(cargo_manifest_path: &Path) -> ImDocument<String> {
     // Track the path to ensure that the proc-macro is re-run when the `Cargo.toml` changes.
     track_path(cargo_manifest_path.to_string_lossy());
-    let cargo_manifest_string =
+    let full_cargo_manifest_string =
       std::fs::read_to_string(cargo_manifest_path).unwrap_or_else(|err| {
         panic!(
           "Unable to read cargo manifest: {} - {err}",
@@ -521,7 +544,10 @@ impl CargoManifest {
         )
       });
 
-    cargo_manifest_string
+    let stripped_cargo_manifest_string =
+      toml_strip::strip_irrelevant_sections_from_cargo_manifest(&full_cargo_manifest_string);
+
+    stripped_cargo_manifest_string
       .parse::<ImDocument<String>>()
       .unwrap_or_else(|err| {
         panic!(
@@ -778,9 +804,8 @@ mod shared_testing_benchmarking;
 #[cfg(test)]
 #[doc(hidden)]
 mod resolve_workspace_path_tests {
-  use tracing_test::traced_test;
-
   use super::*;
+  use tracing_test::traced_test;
 
   #[test]
   fn package_hint() {
@@ -1618,9 +1643,8 @@ pub mod fs_tests {
 
 #[cfg(all(feature = "nightly", not(feature = "proc-macro"), test))]
 mod benches {
-  use std::hint::black_box;
-
   use super::{shared_testing_benchmarking::setup_fs_test, *};
+  use std::hint::black_box;
   extern crate test;
   use test::Bencher;
 

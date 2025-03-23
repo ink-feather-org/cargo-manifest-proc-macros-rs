@@ -1,3 +1,4 @@
+use proc_macro2::Span;
 use syn::token::PathSep;
 
 /// Converts a crate name to a global [`syn::Path`].
@@ -7,8 +8,7 @@ use syn::token::PathSep;
 #[must_use = "This function returns the path to the crate as a syn::Path"]
 pub fn crate_name_to_syn_path(crate_name: &str) -> syn::Path {
   let crate_name = crate_name.replace('-', "_");
-  let mut path =
-    syn::parse_str::<syn::Path>(crate_name.as_str()).expect("Failed to parse crate name as path");
+  let mut path = syn::Path::from(syn::Ident::new(&crate_name, Span::call_site()));
   path.leading_colon = Some(PathSep::default());
   path
 }

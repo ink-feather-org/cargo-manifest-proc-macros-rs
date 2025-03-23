@@ -19,6 +19,7 @@ name = "cargo-manifest-proc-macros"
 version = "0.4.0"
 dependencies = [
  "parking_lot",
+ "proc-macro2",
  "syn",
  "thiserror",
  "toml_edit",
@@ -138,9 +139,9 @@ checksum = "915a1e146535de9163f3987b8944ed8cf49a18bb0056bcebcdcece385cece4ff"
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.92"
+version = "1.0.94"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37d3544b3f2748c54e147655edb5025752e2303145b5aefb3c3ea2c78b973bb0"
+checksum = "a31971752e70b8b2686d7e46ec17fb38dad4051d94024c88df49b667caea9c84"
 dependencies = [
  "unicode-ident",
 ]
