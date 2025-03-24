@@ -222,12 +222,15 @@ pub struct CargoManifest {
   workspace_last_mtime_syscall_ms: AtomicU64,
 }
 
+/// This is the type that is returned when calling [`CargoManifest::shared()`].
+pub type SharedReturn = RwLockReadGuard<'static, CargoManifest>;
+
 impl CargoManifest {
   const MTIME_CACHE_TIMEOUT_MS: u64 = 200;
 
   /// Returns a global shared instance of the [`CargoManifest`] struct.
   #[must_use = "This method returns the shared instance of the CargoManifest."]
-  pub fn shared() -> RwLockReadGuard<'static, Self> {
+  pub fn shared() -> SharedReturn {
     static MANIFESTS: RwLock<BTreeMap<PathBuf, &'static RwLock<CargoManifest>>> =
       RwLock::new(BTreeMap::new());
 
