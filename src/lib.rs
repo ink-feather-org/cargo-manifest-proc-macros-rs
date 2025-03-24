@@ -10,6 +10,7 @@ extern crate alloc;
 #[cfg(all(feature = "nightly", feature = "proc-macro"))]
 extern crate proc_macro;
 
+#[cfg(feature = "toml_strip")]
 mod toml_strip;
 
 mod cargo_manifest;

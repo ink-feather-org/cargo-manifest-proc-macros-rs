@@ -93,6 +93,7 @@ rust-version = "1.83.0"                                                         
 default = ["proc-macro"]
 nightly = ["proc-macro2/nightly"]
 proc-macro = ["syn/proc-macro", "proc-macro2/proc-macro"]
+toml_strip = []
 
 [dependencies]
 tracing = { version = "0.1", default-features = false }

@@ -15,10 +15,7 @@ use thiserror::Error;
 use toml_edit::{ImDocument, Item, Table};
 use tracing::{debug, error, info, trace};
 
-use crate::{
-  syn_utils::{crate_name_to_syn_path, pretty_format_syn_path},
-  toml_strip,
-};
+use crate::syn_utils::{crate_name_to_syn_path, pretty_format_syn_path};
 
 fn get_system_time_fast(invalidate_cache: bool) -> SystemTime {
   thread_local! {
@@ -528,11 +525,36 @@ impl CargoManifest {
   }
 
   #[must_use]
+  #[cfg(feature = "toml_strip")]
   fn parse_cargo_manifest(full_cargo_manifest_string: &str) -> ImDocument<String> {
     let stripped_cargo_manifest_string =
-      toml_strip::strip_irrelevant_sections_from_cargo_manifest(full_cargo_manifest_string);
+      crate::toml_strip::strip_irrelevant_sections_from_cargo_manifest(full_cargo_manifest_string);
 
-    stripped_cargo_manifest_string
+    let parsed_manifest = stripped_cargo_manifest_string.parse::<ImDocument<String>>();
+    match parsed_manifest {
+      Ok(parsed_manifest) => parsed_manifest,
+      Err(err) => {
+        let parsed_manifest_full = full_cargo_manifest_string.parse::<ImDocument<String>>();
+        match parsed_manifest_full {
+          Ok(_parsed_manifest_full) => {
+            panic!(
+              "Failed to parse stripped cargo manifest: {err}.\nPlease open an issue on the cargo-manifest-proc-macros repository.\nIf possible attach your package and workspace Cargo.toml files.",
+            );
+            // We want to fix all the issues with the stripping algorithm. So we panic here.
+            //parsed_manifest_full
+          },
+          Err(err_full) => {
+            panic!("Failed to parse both stripped and full cargo manifest: {err} and {err_full}.\nCheck the cargo manifests for syntax errors.");
+          },
+        }
+      },
+    }
+  }
+
+  #[must_use]
+  #[cfg(not(feature = "toml_strip"))]
+  fn parse_cargo_manifest(full_cargo_manifest_string: &str) -> ImDocument<String> {
+    full_cargo_manifest_string
       .parse::<ImDocument<String>>()
       .unwrap_or_else(|err| panic!("Failed to parse cargo manifest: {err}"))
   }
