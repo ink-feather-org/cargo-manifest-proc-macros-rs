@@ -65,6 +65,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "dependency-crate-real-name-c"
+version = "0.1.0"
+dependencies = [
+ "dependency-crate-real-name-c-macros",
+]
+
+[[package]]
+name = "dependency-crate-real-name-c-macros"
+version = "0.1.0"
+dependencies = [
+ "cargo-manifest-proc-macros",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -168,16 +168,16 @@ impl<'a> WorkspaceDependencyResolver<'a> {
   ) -> &str {
     // Get or initialize the workspace dependencies.
     let workspace_dependencies = self.workspace_dependencies_map.get_or_insert_with(|| {
-      let workspace_cargo_toml_path = CargoManifest::resolve_workspace_manifest_path(
-        self.user_crate_manifest_path,
-        self.package_workspace_hint,
-      );
+      let (workspace_cargo_toml_path, workspace_cargo_toml_string) =
+        CargoManifest::resolve_workspace_manifest_path(
+          self.user_crate_manifest_path,
+          self.package_workspace_hint,
+        );
       self.workspace_manifest_mtime = get_mtime_from_path(&workspace_cargo_toml_path)
         .ok()
         .map(system_time_to_ms);
-      let workspace_cargo_toml =
-        CargoManifest::load_workspace_cargo_toml(&workspace_cargo_toml_path);
       self.workspace_manifest_path = Some(workspace_cargo_toml_path);
+      let workspace_cargo_toml = CargoManifest::parse_cargo_manifest(&workspace_cargo_toml_string);
       Self::load_workspace_cargo_manifest(workspace_cargo_toml.as_table())
     });
 
@@ -394,7 +394,8 @@ impl CargoManifest {
     cargo_manifest_path: &Path,
     user_crate_manifest_mtime_ms: u64,
   ) -> Self {
-    let crate_manifest = Self::parse_cargo_manifest_from_fs(cargo_manifest_path);
+    let crate_manifest_string = Self::load_cargo_toml_from_fs(cargo_manifest_path);
+    let crate_manifest = Self::parse_cargo_manifest(&crate_manifest_string);
 
     // Extract the user crate package name.
     let user_crate_name = Self::extract_user_crate_name(crate_manifest.as_table());
@@ -527,28 +528,13 @@ impl CargoManifest {
   }
 
   #[must_use]
-  fn parse_cargo_manifest_from_fs(cargo_manifest_path: &Path) -> ImDocument<String> {
-    // Track the path to ensure that the proc-macro is re-run when the `Cargo.toml` changes.
-    track_path(cargo_manifest_path.to_string_lossy());
-    let full_cargo_manifest_string =
-      std::fs::read_to_string(cargo_manifest_path).unwrap_or_else(|err| {
-        panic!(
-          "Unable to read cargo manifest: {} - {err}",
-          cargo_manifest_path.display()
-        )
-      });
-
+  fn parse_cargo_manifest(full_cargo_manifest_string: &str) -> ImDocument<String> {
     let stripped_cargo_manifest_string =
-      toml_strip::strip_irrelevant_sections_from_cargo_manifest(&full_cargo_manifest_string);
+      toml_strip::strip_irrelevant_sections_from_cargo_manifest(full_cargo_manifest_string);
 
     stripped_cargo_manifest_string
       .parse::<ImDocument<String>>()
-      .unwrap_or_else(|err| {
-        panic!(
-          "Failed to parse cargo manifest: {} - {err}",
-          cargo_manifest_path.display()
-        )
-      })
+      .unwrap_or_else(|err| panic!("Failed to parse cargo manifest: {err}"))
   }
 
   /// Gets the absolute module path for a crate from a supplied dependencies section.
@@ -664,20 +650,28 @@ impl CargoManifest {
   fn resolve_workspace_manifest_path(
     cargo_manifest_path: &Path,
     package_workspace_hint: Option<&Path>,
-  ) -> PathBuf {
+  ) -> (PathBuf, String) {
     if let Some(package_workspace_hint) = package_workspace_hint {
-      let absolute_package_workspace_hint = if package_workspace_hint.is_absolute() {
-        package_workspace_hint.to_owned()
-      } else {
+      let mut absolute_package_workspace_hint = PathBuf::with_capacity(
         cargo_manifest_path
           .parent()
-          .unwrap()
-          .join(package_workspace_hint)
-      };
-      if absolute_package_workspace_hint.ends_with("Cargo.toml") {
-        return absolute_package_workspace_hint;
+          .map_or(0, |path| path.as_os_str().len())
+          + package_workspace_hint.as_os_str().len()
+          + 10,
+      );
+
+      if !package_workspace_hint.is_absolute() {
+        absolute_package_workspace_hint.push(cargo_manifest_path.parent().unwrap());
       }
-      return absolute_package_workspace_hint.join("Cargo.toml");
+      absolute_package_workspace_hint.push(package_workspace_hint);
+
+      if !absolute_package_workspace_hint.ends_with("Cargo.toml") {
+        absolute_package_workspace_hint.push("Cargo.toml");
+      }
+
+      let workspace_manifest_string =
+        Self::load_cargo_toml_from_fs(&absolute_package_workspace_hint);
+      return (absolute_package_workspace_hint, workspace_manifest_string);
     }
 
     let mut current_path = cargo_manifest_path.parent().unwrap();
@@ -698,7 +692,7 @@ impl CargoManifest {
         // However, this is a rare edge case.
         for line in workspace_manifest_string.lines() {
           if line.trim() == "[workspace]" {
-            return workspace_manifest_path;
+            return (workspace_manifest_path, workspace_manifest_string);
           }
         }
       }
@@ -717,25 +711,16 @@ impl CargoManifest {
   }
 
   #[must_use]
-  fn load_workspace_cargo_toml(workspace_cargo_toml_path: &Path) -> ImDocument<String> {
-    let workspace_cargo_toml_string = std::fs::read_to_string(workspace_cargo_toml_path)
-      .unwrap_or_else(|err| {
-        panic!(
-          "Unable to read workspace cargo manifest: {} - {err}",
-          workspace_cargo_toml_path.display()
-        )
-      });
+  fn load_cargo_toml_from_fs(cargo_toml_path: &Path) -> String {
+    // Track the path to ensure that the proc-macro is re-run when the `Cargo.toml` changes.
+    track_path(cargo_toml_path.to_string_lossy());
 
-    let workspace_cargo_toml = workspace_cargo_toml_string
-      .parse::<ImDocument<String>>()
-      .unwrap_or_else(|err| {
-        panic!(
-          "Failed to parse workspace cargo manifest: {} - {err}",
-          workspace_cargo_toml_path.display()
-        )
-      });
-
-    workspace_cargo_toml
+    std::fs::read_to_string(cargo_toml_path).unwrap_or_else(|err| {
+      panic!(
+        "Unable to read cargo manifest: {} - {err}",
+        cargo_toml_path.display()
+      )
+    })
   }
 
   /// Attempt to retrieve the absolute module path of a crate named [possible_crate_names](str) as an absolute [`syn::Path`].
@@ -795,36 +780,53 @@ impl CargoManifest {
 #[path = "shared_testing_benchmarking.rs"]
 mod shared_testing_benchmarking;
 
+#[cfg(all(not(feature = "proc-macro"), test))]
 #[cfg(test)]
 #[doc(hidden)]
-mod resolve_workspace_path_tests {
+mod resolve_workspace_path_tests_fs {
   use super::*;
   use tracing_test::traced_test;
 
   #[test]
   fn package_hint() {
-    let some_cargo_toml = PathBuf::from("/super-workspace/my-crate/Cargo.toml");
+    let temp_dir = tempfile::tempdir().unwrap();
+    let base_path = temp_dir.path();
+
+    let cargo_tomls_to_create = [
+      base_path.join("super-workspace/my-crate/workspace/Cargo.toml"),
+      base_path.join("workspace/Cargo.toml"),
+    ];
+    // create empty files
+    for cargo_toml_path in &cargo_tomls_to_create {
+      std::fs::create_dir_all(cargo_toml_path.parent().unwrap()).unwrap();
+      std::fs::write(cargo_toml_path, "").unwrap();
+    }
+
+    let some_cargo_toml = base_path.join("super-workspace/my-crate/Cargo.toml");
 
     assert_eq!(
       CargoManifest::resolve_workspace_manifest_path(
         &some_cargo_toml,
         Some(&PathBuf::from("workspace"))
-      ),
-      PathBuf::from("/super-workspace/my-crate/workspace/Cargo.toml")
+      )
+      .0,
+      base_path.join("super-workspace/my-crate/workspace/Cargo.toml")
     );
     assert_eq!(
       CargoManifest::resolve_workspace_manifest_path(
         &some_cargo_toml,
         Some(&PathBuf::from("workspace/Cargo.toml"))
-      ),
-      PathBuf::from("/super-workspace/my-crate/workspace/Cargo.toml")
+      )
+      .0,
+      base_path.join("super-workspace/my-crate/workspace/Cargo.toml")
     );
     assert_eq!(
       CargoManifest::resolve_workspace_manifest_path(
         &some_cargo_toml,
-        Some(&PathBuf::from("/workspace/Cargo.toml"))
-      ),
-      PathBuf::from("/workspace/Cargo.toml")
+        Some(&base_path.join("workspace/Cargo.toml"))
+      )
+      .0,
+      base_path.join("workspace/Cargo.toml")
     );
   }
 
@@ -859,7 +861,7 @@ mod resolve_workspace_path_tests {
     let cargo_package_path = current_path.join("Cargo.toml");
 
     assert_eq!(
-      CargoManifest::resolve_workspace_manifest_path(&cargo_package_path, None),
+      CargoManifest::resolve_workspace_manifest_path(&cargo_package_path, None).0,
       cargo_toml_workspace_path
     );
   }

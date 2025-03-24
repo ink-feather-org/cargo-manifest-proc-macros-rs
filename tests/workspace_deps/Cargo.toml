@@ -13,6 +13,8 @@ members = [
   "dependency-crate-real-name-a-macros",
   "dependency-crate-real-name-b",
   "dependency-crate-real-name-b-macros",
+  "../workspace_deps_package_hint/dependency-crate-real-name-c",
+  "../workspace_deps_package_hint/dependency-crate-real-name-c-macros",
   "test-crate-real-name-dep",
   "test-crate-renamed-dep",
 ]
