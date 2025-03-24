@@ -341,25 +341,19 @@ impl CargoManifest {
 
   #[must_use]
   fn get_current_cargo_manifest_path() -> PathBuf {
-    // The environment variable `CARGO_MANIFEST_PATH` is not consistently set in all environments.
-
     // Access environment variables through the `tracked_env` module to ensure that the proc-macro is re-run when the environment variables change.
-    let cargo_manifest_path_env_var = get_env_var("CARGO_MANIFEST_PATH");
-    let cargo_manifest_path = cargo_manifest_path_env_var.map_or_else(
-      || {
-        // If the `CARGO_MANIFEST_PATH` environment variable is not set, we fall
-        // back to the `CARGO_MANIFEST_DIR` environment variable.
-        let cargo_manifest_dir = get_env_var("CARGO_MANIFEST_DIR").unwrap_or_else(|| {
-          panic!("The environment variable CARGO_MANIFEST_DIR must be set!");
-        });
-        let mut cargo_manifest_path = PathBuf::with_capacity(cargo_manifest_dir.len() + 30);
-        cargo_manifest_path.push(cargo_manifest_dir);
-        cargo_manifest_path.push("Cargo.toml");
-        cargo_manifest_path
-      },
-      PathBuf::from,
-    );
-    cargo_manifest_path
+    if let Some(cargo_manifest_dir) = get_env_var("CARGO_MANIFEST_DIR") {
+      let mut cargo_manifest_path = PathBuf::with_capacity(cargo_manifest_dir.len() + 30);
+      cargo_manifest_path.push(cargo_manifest_dir);
+      cargo_manifest_path.push("Cargo.toml");
+      return cargo_manifest_path;
+    }
+    // If the `CARGO_MANIFEST_DIR` environment variable is not set, we fall back to the `CARGO_MANIFEST_PATH` environment variable.
+    if let Some(cargo_manifest_path) = get_env_var("CARGO_MANIFEST_PATH") {
+      return PathBuf::from(cargo_manifest_path);
+    }
+
+    panic!("Could not find the crate manifest path! Either `CARGO_MANIFEST_DIR` or `CARGO_MANIFEST_PATH` must be set.");
   }
 
   /// # Errors

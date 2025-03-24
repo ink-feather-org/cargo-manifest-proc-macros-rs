@@ -3,7 +3,7 @@
 ```bash
 # run the benchmarks
 cargo bench --package cargo-manifest-proc-macros --lib --features nightly --no-default-features -- toml_strip::benches::strip_and_parse toml_strip::benches::parse_only --exact --show-output
-cargo bench --no-default-features --features "nightly" --bench single_threaded_random_lookups --bench multi_threaded_random_lookups
+cargo bench --no-default-features --features "nightly" --bench single_threaded_random_lookups --bench multi_threaded_random_lookups --bench single_item_lookup
 # benchmark inline benchmarks
 cargo bench --package cargo-manifest-proc-macros --lib --features nightly --no-default-features -- cargo_manifest::benches::get_mtime_from_path cargo_manifest::benches::get_mtime_from_path_cached --exact --show-output
 # compute a flamegraph for a benchmark
