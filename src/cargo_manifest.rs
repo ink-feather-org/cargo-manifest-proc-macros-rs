@@ -12,7 +12,7 @@ use std::{
   time::{SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
-use toml_edit::{ImDocument, Item, Table};
+use toml_edit::{ImDocument, Item, TableLike};
 use tracing::{debug, error, info, trace};
 
 use crate::syn_utils::{crate_name_to_syn_path, pretty_format_syn_path};
@@ -126,12 +126,14 @@ impl<'a> WorkspaceDependencyResolver<'a> {
   }
 
   #[must_use]
-  fn load_workspace_cargo_manifest(workspace_cargo_toml: &Table) -> BTreeMap<String, String> {
+  fn load_workspace_cargo_manifest(
+    workspace_cargo_toml: &dyn TableLike,
+  ) -> BTreeMap<String, String> {
     // Get the `[workspace]` section.
     let workspace_section = workspace_cargo_toml
       .get("workspace")
       .expect("The workspace section is missing!")
-      .as_table()
+      .as_table_like()
       .expect("The workspace section should be a table!");
 
     // Iterate all [workspace."dependencies"] sections.
@@ -426,7 +428,7 @@ impl CargoManifest {
   }
 
   #[must_use]
-  fn extract_user_crate_name(cargo_manifest: &Table) -> String {
+  fn extract_user_crate_name(cargo_manifest: &dyn TableLike) -> String {
     cargo_manifest
       .get("package")
       .and_then(|package_section| package_section.get("name"))
@@ -436,7 +438,7 @@ impl CargoManifest {
   }
 
   #[must_use]
-  fn extract_user_crate_package_workspace_hint(cargo_manifest: &Table) -> Option<PathBuf> {
+  fn extract_user_crate_package_workspace_hint(cargo_manifest: &dyn TableLike) -> Option<PathBuf> {
     cargo_manifest
       .get("package")
       .and_then(|package_section| package_section.get("workspace"))
@@ -444,35 +446,35 @@ impl CargoManifest {
       .map(PathBuf::from)
   }
 
-  fn target_dependencies_tables(cargo_toml: &Table) -> impl Iterator<Item = &Table> {
-    cargo_toml
+  fn target_dependencies_tables(table: &dyn TableLike) -> impl Iterator<Item = &dyn TableLike> {
+    table
       .get("target")
       .into_iter()
-      .filter_map(Item::as_table)
+      .filter_map(Item::as_table_like)
       .flat_map(|t| {
         t.iter()
           .map(|(_, value)| value)
-          .filter_map(Item::as_table)
+          .filter_map(Item::as_table_like)
           .flat_map(Self::normal_dependencies_tables)
       })
   }
 
-  fn normal_dependencies_tables(table: &Table) -> impl Iterator<Item = &Table> {
+  fn normal_dependencies_tables(table: &dyn TableLike) -> impl Iterator<Item = &dyn TableLike> {
     table
       .get("dependencies")
       .into_iter()
       .chain(table.get("dev-dependencies"))
       .chain(table.get("build-dependencies"))
-      .filter_map(Item::as_table)
+      .filter_map(Item::as_table_like)
   }
 
-  fn all_dependencies_tables(cargo_toml: &Table) -> impl Iterator<Item = &Table> {
-    Self::normal_dependencies_tables(cargo_toml).chain(Self::target_dependencies_tables(cargo_toml))
+  fn all_dependencies_tables(table: &dyn TableLike) -> impl Iterator<Item = &dyn TableLike> {
+    Self::normal_dependencies_tables(table).chain(Self::target_dependencies_tables(table))
   }
 
   #[must_use]
   fn extract_dependency_map_for_cargo_manifest(
-    cargo_manifest: &Table,
+    cargo_manifest: &dyn TableLike,
     workspace_dependency_resolver: &mut WorkspaceDependencyResolver<'_>,
   ) -> BTreeMap<String, DependencyState> {
     let dependencies_section_iter = Self::all_dependencies_tables(cargo_manifest);
@@ -901,9 +903,9 @@ mod resolve_workspace_path_tests_fs {
 #[cfg(test)]
 #[doc(hidden)]
 mod resolver_tests {
-  use proc_macro2::Span;
-
   use super::*;
+  use proc_macro2::Span;
+  use tracing_test::traced_test;
 
   fn create_test_cargo_manifest(
     crate_manifest: &str,
@@ -933,7 +935,7 @@ mod resolver_tests {
       workspace_dependencies_map: workspace_dependency_map,
     };
 
-    let user_crate_name = CargoManifest::extract_user_crate_name(&crate_manifest_toml);
+    let user_crate_name = CargoManifest::extract_user_crate_name(crate_manifest_toml.as_table());
     let resolved_dependencies = CargoManifest::extract_dependency_map_for_cargo_manifest(
       crate_manifest_toml.as_table(),
       &mut workspace_resolver,
@@ -949,6 +951,56 @@ mod resolver_tests {
       package_last_mtime_syscall_ms: AtomicU64::new(0),
       workspace_last_mtime_syscall_ms: AtomicU64::new(0),
     }
+  }
+
+  #[test]
+  fn inline_table_full() {
+    let crate_manifest = r#"
+      package = { name = "derive-deftly-tests-tests", version = "0.0.0", publish = false, edition = "2021" }
+      features = { beta = ["derive-deftly-tests/beta"], case = ["derive-deftly-tests/case"], default = ["derive-deftly-tests/default"], full = ["derive-deftly-tests/full"], meta-as-expr = ["derive-deftly-tests/meta-as-expr"], meta-as-items = ["derive-deftly-tests/meta-as-items"], recent = ["derive-deftly-tests/recent"], ui = ["derive-deftly-tests/ui"] }
+      dependencies = { derive-deftly = { version = "*", path = "/volatile/rustcargo/Rustup/Derive-Deftly/derive-deftly/tests/..", default-features = false, features = ["minimal-1"] }, derive-deftly-tests = { path = "/volatile/rustcargo/Rustup/Derive-Deftly/derive-deftly/tests", default-features = false }, easy-ext = { version = "1" }, educe = { version = ">=0.4.6, <0.7" }, glob = { version = "0.3" }, heck = { version = ">=0.4, <0.6" }, indexmap = { version = ">=1.8, <3" }, itertools = { version = ">=0.10.1, <0.16" }, paste = { version = "1" }, proc-macro-crate = { path = "/home/ian/Rustup/Derive-Deftly/proc-macro-crate" }, proc-macro2 = { version = "1.0.53" }, quote = { version = "1" }, regex = { version = "1" }, sha3 = { version = "0.10" }, static_assertions = { version = "1" }, strum = { version = ">=0.24, <0.28", features = ["derive"] }, syn = { version = "2.0.53", features = ["extra-traits", "full"] }, toml = { version = ">=0.5.0, <0.9" }, trybuild = { version = "1.0.46" }, void = { version = "1" } }
+      bin = [{ name = "derive-deftly-tests-tests", path = "main.rs" }, { name = "macrotest001", path = "/volatile/rustcargo/Rustup/Derive-Deftly/derive-deftly/tests/expand/clone.rs" }]
+      workspace = {}
+    "#;
+    let workspace_manifest = None;
+    let crate_to_resolve = "easy-ext";
+    let expected_path = "::easy_ext".to_string();
+
+    let cargo_manifest = create_test_cargo_manifest(crate_manifest, workspace_manifest);
+
+    assert_eq!(
+      pretty_format_syn_path(
+        cargo_manifest
+          .try_resolve_crate_path(crate_to_resolve, &[])
+          .as_ref()
+          .unwrap()
+      ),
+      expected_path
+    );
+  }
+
+  #[test]
+  #[traced_test]
+  fn inline_table_simple() {
+    let crate_manifest = r#"
+      package = { name = "test" }
+      dependencies = { my_crate = "0.1" }
+    "#;
+    let workspace_manifest = None;
+    let crate_to_resolve = "my_crate";
+    let expected_path = "::my_crate".to_string();
+
+    let cargo_manifest = create_test_cargo_manifest(crate_manifest, workspace_manifest);
+
+    assert_eq!(
+      pretty_format_syn_path(
+        cargo_manifest
+          .try_resolve_crate_path(crate_to_resolve, &[])
+          .as_ref()
+          .unwrap()
+      ),
+      expected_path
+    );
   }
 
   #[test]
