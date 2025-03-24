@@ -901,6 +901,8 @@ mod resolve_workspace_path_tests_fs {
 #[cfg(test)]
 #[doc(hidden)]
 mod resolver_tests {
+  use proc_macro2::Span;
+
   use super::*;
 
   fn create_test_cargo_manifest(
@@ -1335,9 +1337,12 @@ mod resolver_tests {
   impl CrateReExportingPolicy for BevyReExportingPolicy {
     fn get_re_exported_crate_path(&self, crate_name: &str) -> Option<PathPiece> {
       crate_name.strip_prefix("bevy_").map(|s| {
-        let mut path = PathPiece::new();
-        path.push(syn::parse_str::<syn::PathSegment>(s).unwrap());
-        path
+        let mut path_piece = PathPiece::new();
+        path_piece.push(syn::PathSegment::from(syn::Ident::new(
+          s,
+          Span::call_site(),
+        )));
+        path_piece
       })
     }
   }

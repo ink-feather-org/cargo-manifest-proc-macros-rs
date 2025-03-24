@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2025-03-24
+
+* Throttle the check for the modified time to once per 200ms.
+* Add a `toml_strip` feature which may speedup the parsing of the `Cargo.toml` file.
+* Reimplement `cargo locate-project` in pure rust.
+* Speed up `syn_utils`.
+* Optimize the order in which environment variables are checked for the most common case.
+
 ## [0.4.0] - 2025-03-17
 
 * Use `ImDocument` instead of `DocumentMut` because editing toml files is not necessary.
@@ -58,7 +66,8 @@ Support reactive compilation using `proc_macro_tracked_env` and `track_path` nig
 
 Initial release.
 
-[Unreleased]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/ink-feather-org/cargo-manifest-proc-macros-rs/compare/v0.3.2...v0.3.3

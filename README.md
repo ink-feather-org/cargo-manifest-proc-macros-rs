@@ -67,6 +67,7 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput};
 use cargo_manifest_proc_macros::{CargoManifest, CrateReExportingPolicy, KnownReExportingCrate, PathPiece};
+use proc_macro2::Span;
 
 struct SuperCrateReExportingPolicy {}
 
@@ -79,7 +80,10 @@ impl CrateReExportingPolicy for SuperCrateReExportingPolicy {
     let export_name = crate_name.strip_suffix("_crate"); // This would handle the case of `my-awesome-crate` being re-exported as just `my-awesome` by `my-awesome-super-crate`.
     export_name.map(|export_name| {
       let mut path_piece = PathPiece::new();
-      path_piece.push(syn::parse_str::<syn::PathSegment>(export_name).unwrap());
+      path_piece.push(syn::PathSegment::from(syn::Ident::new(
+          export_name,
+          Span::call_site(),
+        )));
       path_piece
     })
   }
